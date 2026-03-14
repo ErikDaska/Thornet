@@ -8,25 +8,38 @@ mkdir -p ../emi_remote
 mkdir -p data/raw/tornet
 mkdir -p src
 
-# 2. Check for Data BEFORE touching DVC
-echo "🗄️ Checking dataset status..."
-if [ -z "$(ls -A data/raw/tornet)" ]; then
-    echo "❌ ERROR: The dataset is missing from data/raw/tornet!"
-    echo "Please download the data."
-    exit 1 # This stops the script from continuing and ruining your DVC file!
-else
-    echo "✅ Dataset found locally."
-fi
+# 2. Setup Python Virtual Environment FIRST
+echo "🐍 Configuring Python environment..."
+python3 -m venv venv
+# Activate the environment
+source venv/bin/activate
+# Install requirements PLUS zenodo-get safely inside the isolated environment
+pip install -r requirements.txt zenodo-get -q
 
 # 3. Start the MLflow Server via Docker Compose
 echo "📦 Spinning up MLflow Tracking Server..."
 docker compose up -d
 
-# 4. Setup Python Virtual Environment
-echo "🐍 Configuring Python environment..."
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt -q
+# 4. Check for Data & Auto-Download if Missing
+echo "🗄️ Checking dataset status..."
+if [ -z "$(ls -A data/raw/tornet 2>/dev/null)" ]; then
+    echo "⚠️ Dataset not found locally. Initiating automatic download via Zenodo..."
+    
+    echo "⏳ Downloading the 2013 subset (3GB) from Zenodo... (Grab a coffee, this takes a few minutes!)"
+    # 12636522 is the official MIT-LL Zenodo record ID for the 2013 TorNet data
+    zenodo_get 12636522 -o data/raw/
+    
+    echo "📦 Extracting the downloaded archive..."
+    # Extract the tarball directly into the tornet folder
+    tar -xzf data/raw/tornet_2013.tar.gz -C data/raw/tornet/
+    
+    # Delete the heavy zip file to save hard drive space
+    rm data/raw/tornet_2013.tar.gz
+    
+    echo "✅ Download and extraction complete!"
+else
+    echo "✅ Dataset found locally."
+fi
 
 # 5. Automate DVC Configuration safely
 echo "🔄 Syncing with local DVC remote..."
