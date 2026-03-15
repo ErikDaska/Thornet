@@ -44,14 +44,12 @@ Ensure **Docker Desktop** is running, then execute the setup script from the roo
 ```bash
 chmod +x setup.sh
 ./setup.sh
-
 ```
 
-**For Windows (Git Bash or WSL):**
+**For Windows:**
 
 ```bash
-bash setup.sh
-
+bash setup.bat
 ```
 
 ### ⚙️ What the Setup Script Does:
