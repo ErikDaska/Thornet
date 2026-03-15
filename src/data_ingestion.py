@@ -1,111 +1,112 @@
-import os
-import glob
+import argparse
 import logging
-import mlflow
+from pathlib import Path
+
 import dvc.api
+import mlflow
 import xarray as xr
 
-# --- 1. CONFIGURATION ---
-MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
-EXPERIMENT_NAME = "TorNet_Data_Ingestion"
-DATA_DIR = "data/raw/tornet"
-RUN_NAME = "baseline_ingestion"
-
-# --- 2. LOGGING SETUP ---
-# Clean code practice: Use standard logging instead of print statements
+# --- 1. LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO, 
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# --- 3. HELPER FUNCTIONS ---
-def get_dvc_lineage(data_path: str) -> str:
+# --- 2. HELPER FUNCTIONS ---
+def get_dvc_lineage(data_path: Path) -> str:
     """Retrieves the DVC hash for the dataset to ensure strict data lineage."""
     logger.info(f"Extracting DVC lineage for: {data_path}")
     try:
-        # Using the DVC Python API to get the hash of the data directory
-        resource_url = dvc.api.get_url(path=data_path, repo=".")
-        folder_hash = os.path.basename(resource_url)
-        return folder_hash
+        resource_url = dvc.api.get_url(path=str(data_path), repo=".")
+        # Extract the hash from the DVC path string
+        return Path(resource_url).name
     except Exception as e:
-        logger.error(f"Failed to retrieve DVC hash via API: {e}")
+        logger.warning(f"Failed to retrieve DVC hash (Is the folder tracked by DVC?): {e}")
         return "unknown_hash"
 
-def get_directory_size_mb(data_path: str) -> float:
+def get_directory_size_mb(data_path: Path) -> float:
     """Calculates the total physical size of the dataset directory in Megabytes."""
-    total_size = 0
-    for dirpath, _, filenames in os.walk(data_path):
-        for f in filenames:
-            fp = os.path.join(dirpath, f)
-            if not os.path.islink(fp):
-                total_size += os.path.getsize(fp)
+    total_size = sum(
+        f.stat().st_size for f in data_path.rglob('*') 
+        if f.is_file() and not f.is_symlink()
+    )
     return total_size / (1024 * 1024)
 
-def extract_metadata(data_path: str) -> dict:
-    """Scans the TorNet dataset to extract structural and scientific metadata."""
-    logger.info("Scanning dataset structure...")
+def extract_metadata(data_path: Path) -> dict:
+    """Scans the dataset to extract structural and scientific metadata."""
+    logger.info(f"Scanning dataset structure in {data_path}...")
+    
+    nc_files = list(data_path.rglob("*.nc"))
     
     metadata = {
-        "total_files": 0,
-        "total_size_mb": 0.0,
+        "total_files": len(nc_files),
+        "total_size_mb": get_directory_size_mb(data_path),
         "radar_variables": "None",
         "spatial_dimensions": "None"
     }
     
-    nc_files = glob.glob(os.path.join(data_path, "**", "*.nc"), recursive=True)
-    metadata["total_files"] = len(nc_files)
-    metadata["total_size_mb"] = get_directory_size_mb(data_path)
-    
     if nc_files:
         try:
-            # Lazily open the first NetCDF file to extract its schema
-            ds = xr.open_dataset(nc_files[0])
-            metadata["radar_variables"] = ", ".join(list(ds.data_vars.keys()))
-            metadata["spatial_dimensions"] = str(dict(ds.sizes))
-            ds.close()
+            # Explicitly set engine to resolve Xarray backend errors
+            # Use 'with' to ensure the file is properly closed after reading
+            with xr.open_dataset(nc_files[0], engine="netcdf4") as ds:
+                metadata["radar_variables"] = ", ".join(list(ds.data_vars.keys()))
+                metadata["spatial_dimensions"] = str(dict(ds.sizes))
         except Exception as e:
-            logger.warning(f"Could not read .nc file structure: {e}")
+            logger.warning(f"Could not read .nc file structure. Check dependencies: {e}")
             
     return metadata
 
-# --- 4. MAIN PIPELINE ---
+# --- 3. MAIN PIPELINE ---
 def main():
-    logger.info("--- Starting TorNet Data Ingestion Pipeline ---")
+    # Setup Argument Parser for dynamic execution
+    parser = argparse.ArgumentParser(description="TorNet Data Ingestion Pipeline")
+    parser.add_argument("--data-dir", type=str, default="data/raw/tornet_2013", help="Target dataset directory")
+    parser.add_argument("--mlflow-uri", type=str, default="http://127.0.0.1:5000", help="MLflow Tracking URI")
+    parser.add_argument("--experiment", type=str, default="TorNet_Data_Ingestion", help="MLflow Experiment Name")
+    args = parser.parse_args()
+
+    data_path = Path(args.data_dir)
     
-    # Verify dataset exists before starting
-    if not os.path.exists(DATA_DIR):
-        logger.error(f"Dataset directory not found: {DATA_DIR}. Did you run 'dvc pull'?")
+    # Dynamic Run Name based on the specific folder (e.g., "tornet_2013")
+    run_name = f"ingestion_{data_path.name}"
+
+    logger.info(f"--- Starting Data Ingestion Pipeline for: {data_path.name} ---")
+    
+    if not data_path.exists():
+        logger.error(f"Dataset directory not found: {data_path}. Please check your download step.")
         return
 
     # Extract Data Lineage and Metadata
-    dvc_hash = get_dvc_lineage(DATA_DIR)
-    dataset_metadata = extract_metadata(DATA_DIR)
+    dvc_hash = get_dvc_lineage(data_path)
+    dataset_metadata = extract_metadata(data_path)
 
     # Configure MLflow
-    logger.info(f"Connecting to MLflow Tracking Server at {MLFLOW_TRACKING_URI}...")
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(EXPERIMENT_NAME)
+    logger.info(f"Connecting to MLflow Tracking Server at {args.mlflow_uri}...")
+    mlflow.set_tracking_uri(args.mlflow_uri)
+    mlflow.set_experiment(args.experiment)
 
     # Execute MLflow Run
-    logger.info(f"Initiating MLflow run: '{RUN_NAME}'")
-    with mlflow.start_run(run_name=RUN_NAME):
+    logger.info(f"Initiating MLflow run: '{run_name}'")
+    with mlflow.start_run(run_name=run_name):
         
-        # Log Lineage Parameters (Crucial for Guidelines Evaluation CA2)
-        mlflow.log_param("dataset_name", "MIT-LL TorNet")
-        mlflow.log_param("dataset_source_path", DATA_DIR)
-        mlflow.log_param("dvc_data_hash", dvc_hash)
+        # Log Parameters (Metadata/Config)
+        mlflow.log_params({
+            "dataset_name": "MIT-LL TorNet",
+            "dataset_source_path": str(data_path),
+            "dvc_data_hash": dvc_hash,
+            "radar_variables": dataset_metadata["radar_variables"],
+            "spatial_dimensions": dataset_metadata["spatial_dimensions"]
+        })
         
-        # Log Structural Parameters
-        mlflow.log_param("radar_variables", dataset_metadata["radar_variables"])
-        mlflow.log_param("spatial_dimensions", dataset_metadata["spatial_dimensions"])
-        
-        # Log Metrics
-        mlflow.log_metric("total_files_ingested", dataset_metadata["total_files"])
-        mlflow.log_metric("dataset_size_mb", round(dataset_metadata["total_size_mb"], 2))
+        # Log Metrics (Numeric values)
+        mlflow.log_metrics({
+            "total_files_ingested": dataset_metadata["total_files"],
+            "dataset_size_mb": round(dataset_metadata["total_size_mb"], 2)
+        })
         
         logger.info("Successfully logged all data lineage and metadata to MLflow!")
-        logger.info("Pipeline Complete. Check the MLflow UI to verify.")
 
 if __name__ == "__main__":
     main()
