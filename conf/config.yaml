@@ -1,0 +1,7 @@
+defaults:
+  - paths: default
+  - api: tornet
+  - tracking: mlflow
+  - _self_
+
+project_name: "ThorNet"

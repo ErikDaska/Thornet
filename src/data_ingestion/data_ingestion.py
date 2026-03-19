@@ -5,6 +5,8 @@ from pathlib import Path
 import dvc.api
 import mlflow
 import xarray as xr
+import hydra
+from omegaconf import OmegaConf, DictConfig
 
 # --- 1. LOGGING SETUP ---
 logging.basicConfig(
@@ -13,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- 2. HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS ---
 def get_dvc_lineage(data_path: Path) -> str:
     """Retrieves the DVC hash for the dataset to ensure strict data lineage."""
     logger.info(f"Extracting DVC lineage for: {data_path}")
@@ -49,7 +51,6 @@ def extract_metadata(data_path: Path) -> dict:
     if nc_files:
         try:
             # Explicitly set engine to resolve Xarray backend errors
-            # Use 'with' to ensure the file is properly closed after reading
             with xr.open_dataset(nc_files[0], engine="netcdf4") as ds:
                 metadata["radar_variables"] = ", ".join(list(ds.data_vars.keys()))
                 metadata["spatial_dimensions"] = str(dict(ds.sizes))
@@ -58,22 +59,18 @@ def extract_metadata(data_path: Path) -> dict:
             
     return metadata
 
-# --- 3. MAIN PIPELINE ---
-def main():
-    # Setup Argument Parser for dynamic execution
-    parser = argparse.ArgumentParser(description="TorNet Data Ingestion Pipeline")
-    parser.add_argument("--data-dir", type=str, default="data/raw/tornet_2013", help="Target dataset directory")
-    parser.add_argument("--mlflow-uri", type=str, default="http://127.0.0.1:5000", help="MLflow Tracking URI")
-    parser.add_argument("--experiment", type=str, default="TorNet_Data_Ingestion", help="MLflow Experiment Name")
-    args = parser.parse_args()
+# --- MAIN PIPELINE ---
+@hydra.main(version_base="1.3", config_path="../../conf", config_name="config")
+def main(cfg: DictConfig):
 
-    data_path = Path(args.data_dir)
-    
-    # Dynamic Run Name based on the specific folder (e.g., "tornet_2013")
-    run_name = f"ingestion_{data_path.name}"
+    # Access variables dynamically from Hydra config
+    year = cfg.api.dataset.target_year
+    dir_name = cfg.api.dataset.dir_name
+    data_path = Path(cfg.api.dataset.raw_path)
+    run_name = f"ingestion_{dir_name}"
 
-    logger.info(f"--- Starting Data Ingestion Pipeline for: {data_path.name} ---")
-    
+    logger.info(f"--- Starting {cfg.project_name} Data Ingestion for: {year} ---")
+
     if not data_path.exists():
         logger.error(f"Dataset directory not found: {data_path}. Please check your download step.")
         return
@@ -83,29 +80,30 @@ def main():
     dataset_metadata = extract_metadata(data_path)
 
     # Configure MLflow
-    logger.info(f"Connecting to MLflow Tracking Server at {args.mlflow_uri}...")
-    mlflow.set_tracking_uri(args.mlflow_uri)
-    mlflow.set_experiment(args.experiment)
+    logger.info(f"Connecting to MLflow Tracking Server at {cfg.tracking.uri}...")
+
+    mlflow.set_tracking_uri(cfg.tracking.uri)
+    mlflow.set_experiment(cfg.tracking.experiment_name)
 
     # Execute MLflow Run
     logger.info(f"Initiating MLflow run: '{run_name}'")
     with mlflow.start_run(run_name=run_name):
-        
-        # Log Parameters (Metadata/Config)
+        # Log Parameters
         mlflow.log_params({
-            "dataset_name": "MIT-LL TorNet",
+            "project": cfg.project_name,
+            "dataset_year": year,
             "dataset_source_path": str(data_path),
             "dvc_data_hash": dvc_hash,
-            "radar_variables": dataset_metadata["radar_variables"],
-            "spatial_dimensions": dataset_metadata["spatial_dimensions"]
+            "radar_variables": dataset_metadata.get("radar_variables", "None"),
+            "spatial_dimensions": dataset_metadata.get("spatial_dimensions", "None")
         })
-        
-        # Log Metrics (Numeric values)
+
+        # Log Metrics
         mlflow.log_metrics({
             "total_files_ingested": dataset_metadata["total_files"],
             "dataset_size_mb": round(dataset_metadata["total_size_mb"], 2)
         })
-        
+
         logger.info("Successfully logged all data lineage and metadata to MLflow!")
 
 if __name__ == "__main__":

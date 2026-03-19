@@ -1,0 +1,17 @@
+dataset:
+  target_year: 2013 # Year goes from 2013 to 2022
+  zenodo_id: "12636522"
+  dir_name: "tornet_${api.dataset.target_year}"
+  raw_path: "${paths.raw_data_dir}/${api.dataset.dir_name}"
+
+  zenodo_mapping:
+    2013: "12636522"
+    2014: "12637032"
+    2015: "12655179"
+    2016: "12655179"
+    2017: "12655183"
+    2018: "12655187"
+    2019: "12655716"
+    2020: "12655717"
+    2021: "12655718"
+    2022: "12655719"

@@ -1,12 +1,13 @@
 @echo off
-echo ===================================================
-echo  Starting TorNet MLOps Environment Setup (Windows)
-echo ===================================================
+echo =========================================
+echo  Starting TorNet MLOps Environment Setup
+echo =========================================
 
 echo [1/6] Verifying directory structure...
 if not exist "..\emi_remote" mkdir "..\emi_remote"
 if not exist "data\raw" mkdir "data\raw"
 if not exist "src" mkdir "src"
+if not exist "config" mkdir "config"
 
 echo [2/6] Spinning up MLflow Tracking Server...
 docker compose up -d
@@ -18,19 +19,34 @@ if not exist venv (
     python -m venv venv
 )
 call venv\Scripts\activate
-:: Added netcdf4 and h5netcdf to ensure xarray works
 pip install -r requirements.txt zenodo-get netcdf4 h5netcdf -q
 
-echo [4/6] Checking dataset status (TorNet 2013)...
-if not exist "data\raw\tornet_2013" (
+echo [3.5/6] Reading configuration from Hydra YAML...
+:: Pass any command line arguments (%*) to the bridge script
+python src\get_config.py %*
+
+:: Execute the temp file to load the variables, then clean it up
+call temp_env.bat
+del temp_env.bat
+
+SET DATA_DIR=tornet_%DATA_YEAR%
+
+echo Target Year: %DATA_YEAR%
+echo Zenodo ID: %ZENODO_ID%
+
+echo [4/6] Checking dataset status (TorNet %DATA_YEAR%)...
+if not exist "data\raw\%DATA_DIR%" (
     echo    Dataset not found locally. Initiating download...
-    mkdir "data\raw\tornet_2013"
-    zenodo_get 12636522 -o data\raw\
-    echo    Extracting archive to data\raw\tornet_2013...
-    tar -xzf data\raw\tornet_2013.tar.gz -C data\raw\tornet_2013\
-    del data\raw\tornet_2013.tar.gz
+    mkdir "data\raw\%DATA_DIR%"
+
+    :: We use standard percent signs here now!
+    zenodo_get %ZENODO_ID% -o data\raw\
+
+    echo    Extracting archive to data\raw\%DATA_DIR%...
+    tar -xzf data\raw\%DATA_DIR%.tar.gz -C data\raw\%DATA_DIR%\
+    del data\raw\%DATA_DIR%.tar.gz
 ) else (
-    echo    Dataset 2013 found locally.
+    echo    Dataset %DATA_YEAR% found locally.
 )
 
 echo [5/6] Syncing with local DVC remote...
@@ -40,13 +56,13 @@ if errorlevel 1 (
     dvc remote add -d localremote ..\emi_remote
 )
 
-:: Track only this specific year. Scale by adding dvc add for 2014, etc later.
-dvc add data\raw\tornet_2013
+:: Track only the dynamically loaded year
+dvc add data\raw\%DATA_DIR%
 dvc push
 
 echo [6/6] Executing Data Ingestion Pipeline...
-:: Pass the directory as an argument to make the python script flexible
-python src\data_ingestion.py
+:: Hydra will automatically pick up config/config.yaml
+python src\data_ingestion\data_ingestion.py %*
 
 echo ===================================================
 echo  Setup Complete! Check MLflow at http://127.0.0.1:5000
