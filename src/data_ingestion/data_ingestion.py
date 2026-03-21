@@ -8,7 +8,7 @@ import xarray as xr
 import hydra
 from omegaconf import OmegaConf, DictConfig
 
-# --- 1. LOGGING SETUP ---
+# --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO, 
     format="%(asctime)s - %(levelname)s - %(message)s"
