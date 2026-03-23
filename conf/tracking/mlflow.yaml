@@ -1,4 +1,4 @@
 # Configuration for MLflow tracking server
-uri: "http://localhost:5000"
+uri: "http://mlflow_server:5000"
 experiment_name: "${project_name}"
 default_run_name: "Hydra_Managed_Run"
