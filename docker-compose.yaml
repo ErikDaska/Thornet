@@ -24,7 +24,7 @@ services:
       - POSTGRES_PASSWORD=airflow
       - POSTGRES_DB=airflow
     volumes:
-      - postgres_data:/var/lib/postgresql/18.3/docker
+      - postgres_data:/var/lib/postgresql/18/docker
 
   airflow-init:
     container_name: airflow-init
