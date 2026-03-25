@@ -1,2 +1,6 @@
 venv/*
-data/raw/tornet_2013/train/*
+data/raw/tornet_2013/
+data/raw/catalog.csv
+data/processed/
+outputs/
+pycache/

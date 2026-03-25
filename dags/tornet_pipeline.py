@@ -1,6 +1,8 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 from datetime import datetime, timedelta
+from airflow.models.param import Param
+
 
 # Default arguments applied to all tasks in the DAG
 default_args = {
@@ -21,15 +23,23 @@ with DAG(
     start_date=datetime(2026, 3, 23),
     catchup=False,
     tags=['tornado_capstone', 'training'],
+    # 1. Correção: Remover parênteses extras, mudar para 2013 (sem aspas) e type="integer"
+    params={
+        "target_year": Param(2013, type="integer", description="Year of the Tornet dataset to process (2013-2022)")
+    }
 ) as dag:
     # Task 1: Data Ingestion
     ingest_data = BashOperator(
         task_id='ingest_tornet_data',
-        bash_command='cd /opt/airflow && python src/data_ingestion/data_ingestion.py tracking.uri="http://mlflow_server:5000" tracking.experiment_name="Airflow_Automated_Run"'
+        bash_command=(
+            'cd /opt/airflow && python src/data_ingestion/data_ingestion.py '
+            'tracking.uri="http://mlflow_server:5000" '
+            'tracking.experiment_name="Airflow_Automated_Run" '
+            'api.dataset.target_year="{{ params.target_year }}"'
+        )
     )
-
     # Task 2: Data Processing
-    data_process = ingest_data = BashOperator(
+    data_process = BashOperator(
         task_id='process_tornet_data',
         bash_command='cd /opt/airflow && python src/data_processing/data_processing.py tracking.uri="http://mlflow_server:5000" tracking.experiment_name="Airflow_Automated_Run"'
     )

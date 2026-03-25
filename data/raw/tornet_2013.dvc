@@ -1,0 +1,6 @@
+outs:
+- md5: 0555972bafcc3ad513a652b464fd8bd0.dir
+  size: 3372941019
+  nfiles: 4071
+  hash: md5
+  path: tornet_2013
