@@ -1,5 +1,6 @@
 venv/*
-data/raw/tornet_2013/train/*
-/.dvc
-/outputs
-/dags/__pycache__
+data/raw/tornet_2013/
+data/raw/catalog.csv
+data/processed/
+outputs/
+pycache/

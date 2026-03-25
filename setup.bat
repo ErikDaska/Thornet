@@ -62,7 +62,7 @@ dvc push
 
 echo [6/6] Executing Data Ingestion Pipeline...
 :: Hydra will automatically pick up config/config.yaml
-python src\data_ingestion\data_ingestion.py %*
+python src\data_ingestion\data_ingestion.py tracking.uri="http://127.0.0.1:5000" %*
 
 echo ===================================================
 echo  Setup Complete! Check MLflow at http://127.0.0.1:5000

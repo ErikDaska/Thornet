@@ -1,6 +1,7 @@
 import argparse
 import logging
 from pathlib import Path
+import subprocess
 
 import dvc.api
 import mlflow
@@ -59,21 +60,80 @@ def extract_metadata(data_path: Path) -> dict:
             
     return metadata
 
+def run_command(command, working_dir=None):
+    """Utility function to run shell commands and capture output."""
+    try:
+        result = subprocess.run(
+            command, 
+            shell=True, 
+            check=True, 
+            cwd=working_dir,
+            capture_output=True, 
+            text=True
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Command failed: {command}\nError: {e.stderr}")
+        return None
+
+def get_dvc_lineage(path):
+    """Retrieves the DVC hash for the dataset to ensure strict data lineage."""
+    res = run_command(f"dvc list . {path} --dvc-only")
+    return res.strip() if res else "unknown_hash"
+
 # --- MAIN PIPELINE ---
 @hydra.main(version_base="1.3", config_path="../../conf", config_name="config")
 def main(cfg: DictConfig):
-
-    # Access variables dynamically from Hydra config
     year = cfg.api.dataset.target_year
     dir_name = cfg.api.dataset.dir_name
-    data_path = Path(cfg.api.dataset.raw_path)
     run_name = f"ingestion_{dir_name}"
 
     logger.info(f"--- Starting {cfg.project_name} Data Ingestion for: {year} ---")
 
+    raw_base_dir = Path("data/raw")
+    data_path = raw_base_dir / f"tornet_{year}" 
+    # Check if data already exists locally (DVC-tracked). If not, download from Zenodo and add to DVC.
     if not data_path.exists():
-        logger.error(f"Dataset directory not found: {data_path}. Please check your download step.")
-        return
+        logger.warning(f"Dataset directory not found: {data_path}. Getting data from API")
+        raw_base_dir.mkdir(parents=True, exist_ok=True)
+        # Get the Zenodo ID for the specified year from the config mapping
+        zenodo_id = cfg.api.dataset.zenodo_mapping.get(year)
+        if not zenodo_id:
+            logger.error(f"No Zenodo ID found for year {year}")
+            return
+
+
+        logger.info(f"Downloading year {year} (ID: {zenodo_id})...")
+        try: # Try-except to catch any issues with downloading or extracting the data
+
+            run_command(f"python -m zenodo_get {zenodo_id} -o {raw_base_dir}")
+            
+  
+            archive_path = raw_base_dir / f"tornet_{year}.tar.gz"
+            # Check if the archive was downloaded successfully before attempting to extract
+            if archive_path.exists():
+
+                data_path.mkdir(parents=True, exist_ok=True)
+                run_command(f"tar -xzf {archive_path} -C {data_path} --strip-components=1")
+                
+                archive_path.unlink() 
+                logger.info(f"Data for year {year} extracted successfully.")
+            else:
+                logger.error(f"Archive not found: {archive_path}")
+                return
+        except Exception as e:
+            logger.error(f"Failed: {e}")
+            return
+        
+        # Add the new data directory to DVC tracking
+        logger.info(f"Adding to DVC...")
+        try: 
+            run_command(f"dvc add {data_path}")
+            run_command(f"git add {data_path}.dvc")
+            run_command(f"dvc push")
+        except Exception as e:
+            logger.error(f"DVC error: {e}")
+            return
 
     # Extract Data Lineage and Metadata
     dvc_hash = get_dvc_lineage(data_path)
