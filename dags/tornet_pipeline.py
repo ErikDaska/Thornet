@@ -29,7 +29,7 @@ with DAG(
     )
 
     # Task 2: Data Processing
-    data_process = ingest_data = BashOperator(
+    data_process = BashOperator(
         task_id='process_tornet_data',
         bash_command='cd /opt/airflow && python src/data_processing/data_processing.py tracking.uri="http://mlflow_server:5000" tracking.experiment_name="Airflow_Automated_Run"'
     )
