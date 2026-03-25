@@ -28,16 +28,22 @@ with DAG(
         bash_command='cd /opt/airflow && python src/data_ingestion/data_ingestion.py tracking.uri="http://mlflow_server:5000" tracking.experiment_name="Airflow_Automated_Run"'
     )
 
-    # Task 2: Model Training
+    # Task 2: Data Processing
+    data_process = ingest_data = BashOperator(
+        task_id='process_tornet_data',
+        bash_command='cd /opt/airflow && python src/data_processing/data_processing.py tracking.uri="http://mlflow_server:5000" tracking.experiment_name="Airflow_Automated_Run"'
+    )
+
+    # Task 3: Model Training
     train_model = BashOperator(
         task_id='train_thornet_cnn_model',
         bash_command='cd /opt/airflow && python src/training/train_model.py tracking.experiment_name="Airflow_Automated_Run" tracking.uri="http://mlflow_server:5000"'
     )
 
-    # Task 3: Model Evaluation
+    # Task 4: Model Evaluation
     evaluate_model = BashOperator(
         task_id='evaluate_best_model',
         bash_command='cd /opt/airflow && python src/evaluation/evaluate_model.py'
     )
 
-    ingest_data >> train_model >> evaluate_model
+    ingest_data >> data_process >> train_model >> evaluate_model
