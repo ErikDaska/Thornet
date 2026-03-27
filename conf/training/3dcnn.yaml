@@ -1,3 +1,4 @@
 epochs: 5
 batch_size: 16
 learning_rate: 1e-3
+data_fraction: 0.1
