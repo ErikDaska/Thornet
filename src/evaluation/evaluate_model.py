@@ -12,6 +12,7 @@ import tempfile
 import os
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -21,100 +22,83 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- 1. DATASET & MODEL DEFINITIONS ---
+# --- 1. DATASET DEFINITION (HYPER-OPTIMIZED) ---
 class TornetDataset(Dataset):
     def __init__(self, data_dir: Path, catalog_path: Path, variables=None):
-        """
-        PyTorch Dataset for on-the-fly loading of compressed 3D NetCDF radar data,
-        with labels joined from an external catalog.csv.
-        """
         self.files = sorted(list(data_dir.rglob("*.nc")))
-        
+
         if variables is None:
-            self.variables = ['DBZ', 'VEL', 'KDP', 'RHOHV', 'ZDR', 'WIDTH']
+            self.variables = ['DBZ', 'VEL', 'KDP', 'RHOHV', 'ZDR', 'WIDTH', 'MASK']
         else:
             self.variables = variables
 
         if not self.files:
             logger.warning(f"No .nc files found in {data_dir}!")
 
-        # --- 1. Load Labels from the CSV Catalog ---
+        # --- 1. Load Labels from Catalog ---
         logger.info(f"Loading labels from catalog: {catalog_path}")
         if catalog_path.exists():
             self.catalog = pd.read_csv(catalog_path)
         else:
             logger.error(f"Catalog not found at {catalog_path}. Labels will default to 0.0!")
-            self.catalog = pd.DataFrame() # Empty fallback
+            self.catalog = pd.DataFrame()
 
-        # --- 2. Build an Index Map (Lazy Loading) ---
+        # --- 2. PRE-COMPUTE LABELS (Vectorized - Lightning Fast) ---
+        self.label_map = {}
+        logger.info("Pre-computing label mapping...")
+        if not self.catalog.empty:
+            # Filter the catalog ONCE to get only tornadoes
+            tor_catalog = self.catalog[self.catalog['category'] == 'TOR']
+
+            # Combine all columns into a single giant string block for instant searching
+            tor_text_blob = tor_catalog.to_string()
+
+            for f in self.files:
+                original_filename = f.name.replace("processed_", "")
+                # Instant check: Is this filename anywhere inside the Tornado text block?
+                if original_filename in tor_text_blob:
+                    self.label_map[str(f)] = 1.0
+                else:
+                    self.label_map[str(f)] = 0.0
+
+        # --- 3. Build an Index Map (Skipping xarray open!) ---
         self.index_map = []
-        logger.info("Building dataset index (lazy mapping)...")
+        logger.info("Building dataset index...")
         for f in self.files:
-            with xr.open_dataset(f, engine="netcdf4") as ds:
-                n_steps = ds.sizes.get('time', 1) 
-                for t in range(n_steps):
-                    self.index_map.append((f, t))
-                    
+            # We assume 1 time step per file (idx 0) to bypass slow NetCDF reading
+            self.index_map.append((f, 0))
+
         logger.info(f"Dataset mapped: {len(self.index_map)} total 3D scans available.")
-
-    def _get_label(self, file_path: Path):
-        """Helper function to find the file's label in the CSV."""
-        if self.catalog.empty:
-            return 0.0
-
-        # Note: Your files in processed_data_dir have the prefix "processed_" 
-        # because of our data_processing.py script. We need to match the original name.
-        original_filename = file_path.name.replace("processed_", "")
-
-        # Search the CSV for a row containing this filename
-        # (Assumes the CSV has a column containing the file names, e.g., 'filename', 'file_name', or 'id')
-        # We check all string columns to be safe, but usually it's in a specific column.
-        mask = np.column_stack([self.catalog[col].astype(str).str.contains(original_filename, na=False) for col in self.catalog])
-        match = self.catalog.loc[mask.any(axis=1)]
-
-        if not match.empty:
-            category = match.iloc[0]['category']
-            # Binary Classification Logic
-            if category == 'TOR':
-                return 1.0
-            else:
-                return 0.0 # NULL and WRN become 0.0
-        else:
-            logger.debug(f"Warning: Label not found for {original_filename} in catalog. Defaulting to 0.")
-            return 0.0 
 
     def __len__(self):
         return len(self.index_map)
 
     def __getitem__(self, idx):
         file_path, time_idx = self.index_map[idx]
-        
-        # Open the file on-the-fly
+
+        # We only open the file right when we need it for the batch
         with xr.open_dataset(file_path, engine="netcdf4") as ds:
-            # 1. Isolate the specific time step
             if 'time' in ds.dims:
                 step_ds = ds.isel(time=time_idx)
             else:
                 step_ds = ds
 
-            # 2. Extract Channels to build the 3D Tensor
             channels = []
             for var in self.variables:
                 if var in step_ds.data_vars:
                     data = step_ds[var].values
                 else:
-                    shape = (step_ds.sizes.get('sweep', 1), 
-                             step_ds.sizes.get('azimuth', 1), 
+                    shape = (step_ds.sizes.get('sweep', 1),
+                             step_ds.sizes.get('azimuth', 1),
                              step_ds.sizes.get('range', 1))
                     data = np.zeros(shape, dtype=np.float32)
-                
+
                 channels.append(data)
 
-            # Stack into shape: (Channels, Sweeps, Azimuth, Range)
             features = np.stack(channels, axis=0)
             features_tensor = torch.from_numpy(features).float()
 
-        # 3. Extract the Label using our CSV helper
-        label = self._get_label(file_path)
+        label = self.label_map.get(str(file_path), 0.0)
         label_tensor = torch.tensor(label, dtype=torch.float32)
 
         return features_tensor, label_tensor
@@ -156,8 +140,10 @@ def evaluate(cfg: DictConfig):
     logger.info("--- Starting Model Evaluation ---")
 
     # Set up MLflow
+    mlflow.set_registry_uri("sqlite:////mlflow/mlflow.db")
     mlflow.set_tracking_uri(cfg.tracking.uri)
     experiment_name = cfg.tracking.experiment_name
+    os.environ['MLFLOW_ARTIFACT_ROOT'] = "/mlruns"
     mlflow.set_experiment(experiment_name)
 
     # 1. Find the latest run in the experiment that has a model logged
@@ -177,7 +163,7 @@ def evaluate(cfg: DictConfig):
 
     # 2. Load the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_uri = f"runs:/{latest_run_id}/tornet_3dcnn_model"
+    model_uri = f"runs:/{latest_run_id}/model"
     
     try:
         model = mlflow.pytorch.load_model(model_uri)
@@ -195,7 +181,7 @@ def evaluate(cfg: DictConfig):
         return
 
     dataset = TornetDataset(data_dir=processed_data_path, catalog_path=catalog_path)
-    dataloader = DataLoader(dataset, batch_size=cfg.training.batch_size, shuffle=False, num_workers=2)
+    dataloader = DataLoader(dataset, batch_size=cfg.training.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     # 4. Run Inference
     logger.info("Running inference on evaluation dataset...")

@@ -22,6 +22,7 @@ with DAG(
     schedule='@daily',
     start_date=datetime(2026, 3, 23),
     catchup=False,
+    max_active_runs=1,
     tags=['tornado_capstone', 'training'],
     params={
         "target_year": Param(2013, type="integer", description="Year of the Tornet dataset to process (2013-2022)")
@@ -40,19 +41,34 @@ with DAG(
     # Task 2: Data Processing
     data_process = BashOperator(
         task_id='process_tornet_data',
-        bash_command='cd /opt/airflow && python src/data_processing/new_data_processing.py tracking.uri="http://mlflow_server:5000" tracking.experiment_name="Airflow_Automated_Run"'
+        bash_command=(
+            'cd /opt/airflow && python src/data_processing/new_data_processing.py '
+            'tracking.uri="http://mlflow_server:5000" '
+            'tracking.experiment_name="Airflow_Automated_Run" '
+            'api.dataset.target_year="{{ params.target_year }}"'
+        )
     )
 
     # Task 3: Model Training
     train_model = BashOperator(
         task_id='train_thornet_cnn_model',
-        bash_command='cd /opt/airflow && python src/training/train_model.py tracking.experiment_name="Airflow_Automated_Run" tracking.uri="http://mlflow_server:5000"'
+        bash_command=(
+            'cd /opt/airflow && python src/training/train_model.py '
+            'tracking.uri="http://mlflow_server:5000" '
+            'tracking.experiment_name="Airflow_Automated_Run" '
+            'api.dataset.target_year="{{ params.target_year }}"'
+        )
     )
 
     # Task 4: Model Evaluation
     evaluate_model = BashOperator(
         task_id='evaluate_best_model',
-        bash_command='cd /opt/airflow && python src/evaluation/evaluate_model.py'
+        bash_command=(
+            'cd /opt/airflow && python src/evaluation/evaluate_model.py '
+            'tracking.uri="http://mlflow_server:5000" '
+            'tracking.experiment_name="Airflow_Automated_Run" ' 
+            'api.dataset.target_year="{{ params.target_year }}"'
+        )
     )
 
     ingest_data >> data_process >> train_model >> evaluate_model
