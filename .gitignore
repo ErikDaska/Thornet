@@ -4,3 +4,4 @@ data/raw/catalog.csv
 data/processed/
 outputs/
 pycache/
+/.dvc
