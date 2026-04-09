@@ -162,7 +162,7 @@ def train(cfg: DictConfig):
 
     # Paths and Configs
     processed_data_path = Path(cfg.paths.processed_data_dir) / str(cfg.api.dataset.target_year)
-    catalog_path = Path(cfg.api.dataset.raw_path) / "catalog.csv"
+    catalog_path = Path(cfg.api.dataset.catalog_path) / "catalog.csv"
     
     epochs = cfg.training.get("epochs", 5)
     batch_size = cfg.training.get("batch_size", 16)
