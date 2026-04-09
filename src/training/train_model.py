@@ -12,6 +12,11 @@ import os
 
 from torch.utils.data import DataLoader
 from datasets.tornet_dataset import TornetDataset
+import xarray as xr
+import numpy as np
+import pandas as pd
+import random
+from torch.utils.data import Subset
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -74,8 +79,22 @@ def train(cfg: DictConfig):
         logger.error(f"Processed data not found at {processed_data_path}.")
         return
 
-    dataset = TornetDataset(data_dir=processed_data_path, catalog_path=catalog_path)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
+    full_dataset = TornetDataset(data_dir=processed_data_path, catalog_path=catalog_path)
+    data_fraction = cfg.training.data_fraction
+    if data_fraction < 1.0:
+        total_samples = len(full_dataset)
+        subset_size = max(1, int(total_samples * data_fraction)) # Ensure at least 1 sample
+        
+        # Randomly sample indices to ensure a good mix of data
+        indices = random.sample(range(total_samples), subset_size)
+        dataset = Subset(full_dataset, indices)
+        
+        logger.info(f"Subsampling enabled: Using {data_fraction*100}% of data ({subset_size}/{total_samples} scans).")
+    else:
+        dataset = full_dataset
+        logger.info(f"Using full dataset: {len(dataset)} scans.")
+        
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 
     # Initialize Model, Loss, and Optimizer
     model = Tornet3DCNN(in_channels=7).to(device)
