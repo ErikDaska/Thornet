@@ -28,13 +28,13 @@ class Tornet3DCNN(torch.nn.Module):
             torch.nn.Conv3d(in_channels, 16, kernel_size=3, padding=1),
             torch.nn.BatchNorm3d(16),
             torch.nn.ReLU(),
-            # CHANGED: Pool the first two dims (120x120), leave the last dim (1) alone
+            # Pool the first two dims (120x120), leave the last dim (1) alone
             torch.nn.MaxPool3d(kernel_size=(2, 2, 1), stride=(2, 2, 1)), 
             
             torch.nn.Conv3d(16, 32, kernel_size=3, padding=1),
             torch.nn.BatchNorm3d(32),
             torch.nn.ReLU(),
-            # CHANGED: Pool the first two dims, leave the last dim alone
+            # Pool the first two dims, leave the last dim alone
             torch.nn.MaxPool3d(kernel_size=(2, 2, 1), stride=(2, 2, 1)),
         )
         self.global_pool = torch.nn.AdaptiveAvgPool3d(1)
@@ -122,7 +122,7 @@ def train(cfg: DictConfig):
                 
                 running_loss += loss.item()
 
-                # --- NEW: Calculate Accuracy ---
+                # --- Calculate Accuracy ---
                 # 1. Convert logits to probabilities using sigmoid
                 probs = torch.sigmoid(outputs)
                 # 2. Threshold at 0.5 to get binary prediction (1 or 0)

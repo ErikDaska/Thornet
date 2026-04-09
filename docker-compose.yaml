@@ -38,6 +38,7 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
       - AIRFLOW_UID=0
     command: airflow db migrate
 
@@ -59,6 +60,7 @@ services:
       - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow-webserver:8080/execution/
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
       - AIRFLOW_UID=0
     volumes:
       - ./dags:/opt/airflow/dags
@@ -84,6 +86,7 @@ services:
       - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow-webserver:8080/execution/
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
       - AIRFLOW_UID=0
     volumes:
       - ./dags:/opt/airflow/dags
@@ -118,6 +121,7 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
       - AIRFLOW_UID=0
     volumes:
       - ./dags:/opt/airflow/dags
