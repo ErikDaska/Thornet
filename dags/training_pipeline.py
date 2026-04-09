@@ -16,7 +16,7 @@ default_args = {
 
 # DAG context
 with DAG(
-    dag_id='trainig_evaluating_model',
+    dag_id='training_evaluating_model',
     default_args=default_args,
     description='End-to-End MLOps Pipeline for Tornado Forecasting',
     schedule='@daily',

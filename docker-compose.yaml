@@ -38,6 +38,8 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
+      - AIRFLOW_UID=0
     command: airflow db migrate
 
   airflow-webserver:
@@ -58,6 +60,8 @@ services:
       - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow-webserver:8080/execution/
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
+      - AIRFLOW_UID=0
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
@@ -75,12 +79,15 @@ services:
     depends_on:
       - postgres
     restart: unless-stopped
+    shm_size: '8gb'
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow-webserver:8080/execution/
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
+      - AIRFLOW_UID=0
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
@@ -88,7 +95,15 @@ services:
       - ./data:/opt/airflow/data
       - ./.dvc:/opt/airflow/.dvc
       - ./.git:/opt/airflow/.git
+      - ./mlruns:/mlruns
     command: airflow scheduler
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
   airflow-dag-processor:
     container_name: airflow-dag-processor
@@ -106,6 +121,8 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
       - AIRFLOW__API_AUTH__JWT_SECRET=super_secret_mlops_jwt_key
       - AIRFLOW__API__SECRET_KEY=super_secret_mlops_api_key
+      - PYTHONPATH=/opt/airflow/src
+      - AIRFLOW_UID=0
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
