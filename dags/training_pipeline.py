@@ -1,9 +1,8 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
+from airflow.models.param import Param
 from datetime import datetime, timedelta
-from airflow.sdk import Param
 import os
-
 
 CONF_MODEL_DIR = "/opt/airflow/conf/model"
 try:
@@ -34,33 +33,49 @@ with DAG(
     catchup=False,
     tags=['tornado_capstone', 'training'],
     params={
-            "target_model": Param(
-                default="all",
-                enum=dropdown_options,
-                description="Select 'all' to run every model, or pick a specific one to train."
-            ),
-            "target_year": Param(2013, type="integer", description="Year of the Tornet dataset")
-        }
+        "target_model": Param(
+            default="all",
+            enum=dropdown_options,
+            description="Select 'all' to run every model, or pick a specific one to train."
+        ),
+        "target_year": Param(
+            default=2013, 
+            type="integer", 
+            description="Year of the Tornet dataset"
+        )
+    }
 ) as dag:
 
     for model_name in available_models:
+        
+        # BROKEN OUT FOR READABILITY: Notice the addition of the target_year parameter override
         run_logic_training = (
             f"if [ '{{{{ params.target_model }}}}' = 'all' ] || [ '{{{{ params.target_model }}}}' = '{model_name}' ]; then "
-            f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/training/train_model.py model={model_name} tracking.uri='http://mlflow_server:5000' tracking.experiment_name='Airflow_Automated_Run'; "
+            f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/training/train_model.py "
+            f"model={model_name} "
+            f"api.dataset.target_year={{{{ params.target_year }}}} "
+            f"tracking.uri='http://mlflow_server:5000' "
+            f"tracking.experiment_name='Airflow_Automated_Run'; "
             "else "
             f"echo 'Skipping {model_name} training based on UI selection.'; "
             "exit 99; "
             "fi"
         )
+        
         # Model Training
         train_model = BashOperator(
             task_id=f'train_{model_name}_model',
             bash_command=run_logic_training
         )
 
+        # BROKEN OUT FOR READABILITY: Notice the addition of the target_year parameter override
         run_logic_evaluation = (
             f"if [ '{{{{ params.target_model }}}}' = 'all' ] || [ '{{{{ params.target_model }}}}' = '{model_name}' ]; then "
-            f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/evaluation/evaluate_model.py model={model_name} tracking.uri='http://mlflow_server:5000' tracking.experiment_name='Airflow_Automated_Run'; "
+            f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/evaluation/evaluate_model.py "
+            f"model={model_name} "
+            f"api.dataset.target_year={{{{ params.target_year }}}} "
+            f"tracking.uri='http://mlflow_server:5000' "
+            f"tracking.experiment_name='Airflow_Automated_Run'; "
             "else "
             f"echo 'Skipping {model_name} evaluation based on UI selection.'; "
             "exit 99; "

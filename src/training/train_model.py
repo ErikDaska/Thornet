@@ -5,28 +5,24 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
-from training.models import get_model
 import torch.nn.functional as F
 
+from training.models import get_model
 import hydra
 from omegaconf import DictConfig
 import mlflow
 import mlflow.pytorch
 import os
 from datetime import datetime
-import matplotlib.pyplot as plt
+
+# Switched to Plotly
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from datasets.tornet_dataset import TornetDataset
-import xarray as xr
-import numpy as np
 import pandas as pd
-import random
-from torch.utils.data import Subset
-
-from models.CNN import Tornet3DCNN, Tornet2DCNN
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -35,14 +31,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 class BinaryFocalLossWithLogits(nn.Module):
-    """
-    Focal Loss designed to prevent Mode Collapse in heavily imbalanced spatial maps.
-    It dynamically scales the loss based on the model's confidence, forcing it to
-    pay attention to the rare positive (tornado) cases instead of spamming '0'.
-    """
-
+    # ... (Keep your Focal Loss class exactly as is) ...
     def __init__(self, alpha=0.75, gamma=2.0, pos_weight=None):
         super().__init__()
         self.alpha = alpha
@@ -50,20 +40,12 @@ class BinaryFocalLossWithLogits(nn.Module):
         self.pos_weight = pos_weight
 
     def forward(self, inputs, targets):
-        # Calculate standard BCE
         bce_loss = F.binary_cross_entropy_with_logits(
             inputs, targets, reduction='none', pos_weight=self.pos_weight
         )
-
-        # Calculate probabilities to determine confidence
         probs = torch.sigmoid(inputs)
-
-        # pt is the predicted probability for the TRUE class
         pt = torch.where(targets == 1, probs, 1 - probs)
-
-        # Apply the focal multiplier: (1 - pt)^gamma
         focal_weight = self.alpha * (1 - pt) ** self.gamma
-
         return (focal_weight * bce_loss).mean()
 
 # --- MAIN TRAINING LOOP ---
@@ -73,12 +55,11 @@ def train(cfg: DictConfig):
 
     # Paths and Configs
     processed_data_path = Path(cfg.paths.processed_data_dir) / str(cfg.api.dataset.target_year)
-    catalog_path = Path(cfg.api.dataset.catalog_path) / "catalog.csv"
+    catalog_path = Path(cfg.api.dataset.raw_path) / "catalog.csv" # Fixed to raw_path to match evaluate script
     
     epochs = cfg.model.get("epochs", 5)
     batch_size = cfg.model.get("batch_size", 16)
     learning_rate = cfg.model.get("learning_rate", 1e-3)
-    validation_split = cfg.model.get("validation_split", 0.0)
     seed = cfg.model.get("seed", 42)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -90,63 +71,51 @@ def train(cfg: DictConfig):
         return
 
     dataset = TornetDataset(data_dir=processed_data_path, catalog_path=catalog_path)
-    if validation_split > 0.0:
-        val_size = int(len(dataset) * validation_split)
-        train_size = len(dataset) - val_size
-        if val_size <= 0 or train_size <= 0:
-            logger.error("validation_split must produce at least one sample for both train and validation sets.")
-            return
 
-        train_dataset, val_dataset = random_split(
-            dataset,
-            [train_size, val_size],
-            generator=torch.Generator().manual_seed(seed)
-        )
+    # --- 70/15/15 Stratified Split ---
+    logger.info("Performing 70/15/15 stratified train/val/test split...")
+    
+    # Safely extract labels to stratify
+    all_indices = list(range(len(dataset)))
+    # Note: Depending on your dataset implementation, accessing dataset[i] might be slow. 
+    # If TornetDataset has a fast way to get labels, replace this list comprehension.
+    all_labels = [dataset[i][1].item() for i in range(len(dataset))]
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-        logger.info(f"Using validation split: {validation_split:.2f} ({train_size} train / {val_size} validation samples)")
-    else:
+    # Split 1: 70% Train, 30% Temp 
+    train_idx, temp_idx, y_train, y_temp = train_test_split(
+        all_indices, all_labels,
+        test_size=0.30,
+        stratify=all_labels,
+        random_state=seed
+    )
 
+    # Split 2: Split the 30% Temp into 15% Val and 15% Test
+    val_idx, test_idx, _, _ = train_test_split(
+        temp_idx, y_temp,
+        test_size=0.50,
+        stratify=y_temp,
+        random_state=seed
+    )
 
-        # --- 70/15/15 Stratified Split (Safely Aligned) ---
-        logger.info("Performing 70/15/15 stratified train/val/test split...")
+    logger.info(f"Final Split sizes -> Train: {len(train_idx)} | Val: {len(val_idx)} | Test: {len(test_idx)}")
 
-        # Split 1: 70% Train, 30% Temp (using the data we decided to keep)
-        train_idx, temp_idx, y_train, y_temp = train_test_split(
-            used_idx, used_y,
-            test_size=0.30,
-            stratify=used_y,
-            random_state=42
-        )
+    # --- Subsets & DataLoaders ---
+    train_dataset = Subset(dataset, train_idx)
+    val_dataset = Subset(dataset, val_idx)
 
-        # Split 2: Split the 30% Temp into 15% Val and 15% Test
-        val_idx, test_idx, _, _ = train_test_split(
-            temp_idx, y_temp,
-            test_size=0.50,
-            stratify=y_temp,
-            random_state=42
-        )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-        logger.info(f"Final Split sizes -> Train: {len(train_idx)} | Val: {len(val_idx)} | Test: {len(test_idx)}")
-
-        # --- Subsets & DataLoaders ---
-        train_dataset = Subset(full_dataset, train_idx)
-        val_dataset = Subset(full_dataset, val_idx)
-
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-
-        # --- Save Test Indices for Evaluation Task ---
-        test_indices_path = Path(cfg.paths.processed_data_dir) / f"test_indices_{cfg.api.dataset.target_year}.csv"
-        pd.DataFrame({"test_index": test_idx}).to_csv(test_indices_path, index=False)
-        logger.info(f"Saved test indices to {test_indices_path}")
+    # --- Save Test Indices for Evaluation Task ---
+    test_indices_path = Path(cfg.paths.processed_data_dir) / f"test_indices_{cfg.api.dataset.target_year}.csv"
+    pd.DataFrame({"test_index": test_idx}).to_csv(test_indices_path, index=False)
+    logger.info(f"Saved test indices to {test_indices_path}")
 
     # Initialize Model, Loss, and Optimizer
     model_kwargs = dict(cfg.model.get("params", {}))
     model_kwargs.setdefault("in_channels", len(dataset.variables))
     model = get_model(cfg.model.name, **model_kwargs).to(device)
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss() # Or BinaryFocalLossWithLogits() if you want to use your custom loss
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # Configure MLflow
@@ -154,14 +123,15 @@ def train(cfg: DictConfig):
     mlflow.set_experiment(cfg.tracking.experiment_name)
     mlflow.pytorch.autolog(log_models=True)
 
-
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{cfg.model.name}_training_{cfg.api.dataset.target_year}_{current_time}"
+    
+    # Cleaned up history dictionary
     history = {
         "train_loss": [],
-        "train_accuracy": [],
+        "train_acc": [],
         "val_loss": [],
-        "val_accuracy": [],
+        "val_acc": [],
     }
 
     with mlflow.start_run(run_name=run_name):
@@ -201,61 +171,78 @@ def train(cfg: DictConfig):
                 correct_predictions += (predictions == labels).sum().item()
                 total_samples += labels.size(0)
 
-            avg_loss = running_loss / len(train_loader)
-            epoch_accuracy = correct_predictions / total_samples
+            avg_train_loss = running_loss / len(train_loader)
+            train_accuracy = correct_predictions / total_samples
             
-            logger.info(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {avg_loss:.4f} | Train Accuracy: {epoch_accuracy:.4f}")
+            # --- VALIDATION PHASE ---
+            model.eval()
+            val_loss = 0.0
+            val_correct = 0
+            val_total = 0
             
-            mlflow.log_metric("train_loss", avg_loss, step=epoch)
-            mlflow.log_metric("train_accuracy", epoch_accuracy, step=epoch)
-            history["train_loss"].append(avg_loss)
-            history["train_accuracy"].append(epoch_accuracy)
+            with torch.no_grad():
+                for inputs, labels in val_loader:
+                    inputs, labels = inputs.to(device), labels.to(device).unsqueeze(1)
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+                    
+                    val_loss += loss.item()
+                    probs = torch.sigmoid(outputs)
+                    predictions = (probs > 0.5).float()
+                    val_correct += (predictions == labels).sum().item()
+                    val_total += labels.size(0)
 
-            if val_loader is not None:
-                val_loss, val_accuracy = evaluate_loader(model, val_loader, criterion, device)
-                logger.info(f"Epoch [{epoch+1}/{epochs}] - Val Loss: {val_loss:.4f} | Val Accuracy: {val_accuracy:.4f}")
+            avg_val_loss = val_loss / len(val_loader)
+            val_accuracy = val_correct / val_total
 
-                mlflow.log_metric("val_loss", val_loss, step=epoch)
-                mlflow.log_metric("val_accuracy", val_accuracy, step=epoch)
-                history["val_loss"].append(val_loss)
-                history["val_accuracy"].append(val_accuracy)
-            else:
-                history["val_loss"].append(None)
-                history["val_accuracy"].append(None)
+            # --- LOGGING ---
+            logger.info(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Train Acc: {train_accuracy:.4f} | Val Acc: {val_accuracy:.4f}")
+            
+            mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
+            mlflow.log_metric("train_accuracy", train_accuracy, step=epoch)
+            mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+            mlflow.log_metric("val_accuracy", val_accuracy, step=epoch)
+            
+            # Save to history dictionary
+            history["train_loss"].append(avg_train_loss)
+            history["train_acc"].append(train_accuracy)
+            history["val_loss"].append(avg_val_loss)
+            history["val_acc"].append(val_accuracy)
 
-            history['train_loss'].append(avg_train_loss)
-            history['val_loss'].append(avg_val_loss)
-            history['train_acc'].append(train_accuracy)
-            history['val_acc'].append(val_accuracy)
+        # --- GENERATE PLOTLY DASHBOARD ---
+        logger.info("Generating and logging interactive Plotly training graphs...")
+        
+        fig = make_subplots(rows=1, cols=2, subplot_titles=('Model Loss', 'Model Accuracy'))
+        x_epochs = list(range(1, epochs + 1))
 
-        # --- GENERATE PLOTS ---
-        logger.info("Generating and logging training plots...")
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        # Loss Plot
+        fig.add_trace(go.Scatter(x=x_epochs, y=history['train_loss'], mode='lines+markers', name='Train Loss', line=dict(color='blue')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x_epochs, y=history['val_loss'], mode='lines+markers', name='Val Loss', line=dict(color='orange')), row=1, col=1)
 
-        axes[0].plot(range(1, epochs + 1), history['train_loss'], label='Train Loss', marker='o')
-        axes[0].plot(range(1, epochs + 1), history['val_loss'], label='Val Loss', marker='o')
-        axes[0].set_title('Model Loss')
-        axes[0].set_xlabel('Epoch')
-        axes[0].set_ylabel('Loss')
-        axes[0].legend()
-        axes[0].grid(True)
+        # Accuracy Plot
+        fig.add_trace(go.Scatter(x=x_epochs, y=history['train_acc'], mode='lines+markers', name='Train Accuracy', line=dict(color='green')), row=1, col=2)
+        fig.add_trace(go.Scatter(x=x_epochs, y=history['val_acc'], mode='lines+markers', name='Val Accuracy', line=dict(color='red')), row=1, col=2)
 
-        axes[1].plot(range(1, epochs + 1), history['train_acc'], label='Train Accuracy', marker='o')
-        axes[1].plot(range(1, epochs + 1), history['val_acc'], label='Val Accuracy', marker='o')
-        axes[1].set_title('Model Accuracy')
-        axes[1].set_xlabel('Epoch')
-        axes[1].set_ylabel('Accuracy')
-        axes[1].legend()
-        axes[1].grid(True)
-
-        mlflow.log_figure(fig, "metrics_plot.png")
-        plt.close(fig)
+        fig.update_layout(
+            title=f'{cfg.model.name} Training Metrics',
+            xaxis_title='Epoch',
+            xaxis2_title='Epoch',
+            yaxis_title='Loss',
+            yaxis2_title='Accuracy',
+            template='plotly_white'
+        )
 
         logger.info("Training complete. Saving model manually to MLflow...")
         mlflow.pytorch.log_model(model, "model")
 
-        # Log training history artifact
+        # Log Plotly HTML and training history JSON
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Save Plotly Fig
+            metrics_plot_path = os.path.join(tmpdir, "training_metrics.html")
+            fig.write_html(metrics_plot_path)
+            mlflow.log_artifact(metrics_plot_path, artifact_path="training_plots")
+
+            # Save JSON history
             history_path = os.path.join(tmpdir, "training_history.json")
             with open(history_path, "w", encoding="utf-8") as history_file:
                 json.dump(history, history_file, indent=2)
