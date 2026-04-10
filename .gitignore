@@ -97,4 +97,16 @@ multirun/
 *.bak
 *.tmp
 *.orig
-.cache/
+.cache/
+venv/*
+data/raw/tornet_2013/
+data/raw/catalog.csv
+data/processed/
+outputs/
+pycache/
+/.dvc
+/.env
+mlruns/
+dags/__pycache__/
+src/datasets/__pycache__
+src/training/models/__pycache__
