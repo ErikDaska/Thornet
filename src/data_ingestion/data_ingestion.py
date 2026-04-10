@@ -93,7 +93,12 @@ def main(cfg: DictConfig):
     raw_base_dir = Path("data/raw")
     data_path = raw_base_dir / f"tornet_{year}" 
     # Check if data already exists locally (DVC-tracked). If not, download from Zenodo and add to DVC.
+    data_processd = cfg.paths.processed_data_dir / f"tornet_{year}"
     if not data_path.exists():
+        if data_processd.exists():
+            
+            logger.warning(f"Processed data for year {year} already exists at {data_processd}. Skipping ingestion.")
+            return
         logger.warning(f"Dataset directory not found: {data_path}. Getting data from API")
         raw_base_dir.mkdir(parents=True, exist_ok=True)
         # Get the Zenodo ID for the specified year from the config mapping
@@ -134,6 +139,9 @@ def main(cfg: DictConfig):
         except Exception as e:
             logger.error(f"DVC error: {e}")
             return
+    
+    
+        
 
     # Extract Data Lineage and Metadata
     dvc_hash = get_dvc_lineage(data_path)
