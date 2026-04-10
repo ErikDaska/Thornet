@@ -92,42 +92,41 @@ def main(cfg: DictConfig):
 
     raw_base_dir = Path("data/raw")
     data_path = raw_base_dir / f"tornet_{year}" 
-    # Check if data already exists locally (DVC-tracked). If not, download from Zenodo and add to DVC.
-    data_processd = cfg.paths.processed_data_dir / f"tornet_{year}"
+    
+    processed_base = Path(cfg.paths.processed_data_dir)
+    data_processed = processed_base / f"tornet_{year}"
+
+    # Check if raw data already exists
     if not data_path.exists():
-        if data_processd.exists():
-            
-            logger.warning(f"Processed data for year {year} already exists at {data_processd}. Skipping ingestion.")
+        if data_processed.exists():
+            logger.warning(f"Processed data for year {year} already exists at {data_processed}. Skipping ingestion.")
             return
+            
         logger.warning(f"Dataset directory not found: {data_path}. Getting data from API")
         raw_base_dir.mkdir(parents=True, exist_ok=True)
-        # Get the Zenodo ID for the specified year from the config mapping
+        
+        # Get the Zenodo ID for the specified year
         zenodo_id = cfg.api.dataset.zenodo_mapping.get(year)
         if not zenodo_id:
             logger.error(f"No Zenodo ID found for year {year}")
             return
 
-
         logger.info(f"Downloading year {year} (ID: {zenodo_id})...")
-        try: # Try-except to catch any issues with downloading or extracting the data
-
+        try:
+            # Download using the zenodo_get module
             run_command(f"python -m zenodo_get {zenodo_id} -o {raw_base_dir}")
             
-  
             archive_path = raw_base_dir / f"tornet_{year}.tar.gz"
-            # Check if the archive was downloaded successfully before attempting to extract
             if archive_path.exists():
-
                 data_path.mkdir(parents=True, exist_ok=True)
                 run_command(f"tar -xzf {archive_path} -C {data_path} --strip-components=1")
-                
                 archive_path.unlink() 
                 logger.info(f"Data for year {year} extracted successfully.")
             else:
                 logger.error(f"Archive not found: {archive_path}")
                 return
         except Exception as e:
-            logger.error(f"Failed: {e}")
+            logger.error(f"Failed download/extraction: {e}")
             return
         
         # Add the new data directory to DVC tracking
@@ -139,24 +138,18 @@ def main(cfg: DictConfig):
         except Exception as e:
             logger.error(f"DVC error: {e}")
             return
-    
-    
-        
 
     # Extract Data Lineage and Metadata
     dvc_hash = get_dvc_lineage(data_path)
     dataset_metadata = extract_metadata(data_path)
 
     # Configure MLflow
-    logger.info(f"Connecting to MLflow Tracking Server at {cfg.tracking.uri}...")
-
     mlflow.set_tracking_uri(cfg.tracking.uri)
     mlflow.set_experiment(cfg.tracking.experiment_name)
 
     # Execute MLflow Run
     logger.info(f"Initiating MLflow run: '{run_name}'")
     with mlflow.start_run(run_name=run_name):
-        # Log Parameters
         mlflow.log_params({
             "project": cfg.project_name,
             "dataset_year": year,
@@ -166,7 +159,6 @@ def main(cfg: DictConfig):
             "spatial_dimensions": dataset_metadata.get("spatial_dimensions", "None")
         })
 
-        # Log Metrics
         mlflow.log_metrics({
             "total_files_ingested": dataset_metadata["total_files"],
             "dataset_size_mb": round(dataset_metadata["total_size_mb"], 2)

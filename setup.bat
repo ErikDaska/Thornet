@@ -27,6 +27,7 @@ echo ===================================================
 echo  Infrastructure Ready! 
 echo  1. MLflow: http://127.0.0.1:5000
 echo  2. Airflow: http://127.0.0.1:8080
+echo  3. Streamlit: http://127.0.0.1:8501
 echo  ---------------------------------------------------
 echo  Note: Data Ingestion, Processing, and DVC 
 echo  tracking are now handled entirely by Airflow.

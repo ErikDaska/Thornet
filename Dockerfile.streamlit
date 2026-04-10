@@ -1,0 +1,44 @@
+
+# Dockerfile.streamlit
+# Container for the Tornado Alert Dashboard
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies (for folium/numpy)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        curl \
+    && apt-get autoremove -yqq --purge \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    streamlit==1.45.0 \
+    pandas==2.2.3 \
+    numpy==2.2.5 \
+    folium==0.19.5 \
+    streamlit-folium==0.25.0
+
+# Copy the application
+COPY app.py /app/app.py
+
+# door
+EXPOSE 8501
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+# Aplication start
+CMD ["streamlit", "run", "app.py", \
+     "--server.port=8501", \
+     "--server.address=0.0.0.0", \
+     "--server.headless=true", \
+     "--browser.gatherUsageStats=false", \
+     "--theme.base=dark", \
+     "--theme.primaryColor=#3b82f6", \
+     "--theme.backgroundColor=#0d1117", \
+     "--theme.secondaryBackgroundColor=#161b27", \
+     "--theme.textColor=#e2e8f0"]

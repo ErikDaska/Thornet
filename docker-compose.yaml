@@ -132,5 +132,20 @@ services:
       - ./.git:/opt/airflow/.git
     command: airflow dag-processor
 
+  streamlit-app:
+    container_name: tornado-app
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PREDICTIONS_CSV=/app/data/latest_predictions.csv
+    depends_on:
+      - mlflow
+    restart: unless-stopped
+
 volumes:
   postgres_data:

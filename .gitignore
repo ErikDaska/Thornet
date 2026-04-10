@@ -1,8 +1,100 @@
-venv/*
-data/raw/tornet_2013/
-data/raw/catalog.csv
+# =============================================================
+#  TorNet MLOps — .gitignore
+# =============================================================
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.whl
+MANIFEST
+
+# ── Virtual Environments ──────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+.env
+
+# ── Jupyter Notebooks ─────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── IDEs & Editors ────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Dataset & Raw Data (pesados — geridos pelo DVC) ───────────
+data/raw/
 data/processed/
+data/latest_predictions.csv
+*.nc
+*.tar.gz
+*.zip
+*.h5
+*.hdf5
+
+# ── MLflow ────────────────────────────────────────────────────
+mlruns/
+mlflow.db
+*.db
+
+# ── DVC ───────────────────────────────────────────────────────
+/emi_remote/
+.dvc/tmp/
+.dvc/cache/
+
+# ── Outputs & Artefactos ──────────────────────────────────────
 outputs/
-pycache/
-/.dvc
-/.env
+logs/
+*.log
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# ── Airflow ───────────────────────────────────────────────────
+airflow.cfg
+airflow.db
+airflow-webserver.pid
+standalone_admin_password.txt
+dags/__pycache__/
+
+# ── Docker ────────────────────────────────────────────────────
+.dockerignore
+
+# ── PyTorch ───────────────────────────────────────────────────
+*.pt
+*.pth
+*.ckpt
+
+# ── Hydra ─────────────────────────────────────────────────────
+outputs/
+multirun/
+.hydra/
+
+# ── Misc ──────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.orig
+.cache/
