@@ -22,19 +22,33 @@ with DAG(
     schedule='@daily',
     start_date=datetime(2026, 3, 23),
     catchup=False,
-    tags=['tornado_capstone', 'training']
+    tags=['tornado_capstone', 'training'],
+    params={
+            "target_year": Param(2013, type="integer", description="Year of the Tornet dataset") # <-- Added missing params
+        }
 ) as dag:
 
     # Model Training
     train_model = BashOperator(
         task_id='train_thornet_cnn_model',
-        bash_command='cd /opt/airflow && python src/training/train_model.py tracking.experiment_name="Airflow_Automated_Run" tracking.uri="http://mlflow_server:5000"'
+        bash_command=(
+            'cd /opt/airflow && python src/training/train_model.py '
+            'tracking.uri="http://mlflow_server:5000" '
+            'tracking.experiment_name="Airflow_Automated_Run" '
+            'api.dataset.target_year={{ params.target_year }} '
+            'training.epochs=10'
+        )
     )
 
     # Model Evaluation
     evaluate_model = BashOperator(
         task_id='evaluate_best_model',
-        bash_command='cd /opt/airflow && python src/evaluation/evaluate_model.py'
+        bash_command=(
+            'cd /opt/airflow && python src/evaluation/evaluate_model.py '
+            'tracking.uri="http://mlflow_server:5000" '
+            'tracking.experiment_name="Airflow_Automated_Run" '
+            'api.dataset.target_year={{ params.target_year }} '
+        )
     )
 
     train_model >> evaluate_model
