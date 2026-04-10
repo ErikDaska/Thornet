@@ -1,8 +1,7 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 from datetime import datetime, timedelta
-from airflow.models.param import Param
-
+from airflow.sdk import Param
 
 # Default arguments applied to all tasks in the DAG
 default_args = {
