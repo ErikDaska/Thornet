@@ -12,8 +12,11 @@ services:
       - MLFLOW_ARTIFACT_ROOT=/mlflow/artifacts
       - MLFLOW_SERVER_ALLOWED_HOSTS=mlflow_server:*,localhost:*,127.0.0.1:*
     command: >
-      bash -c "pip install mlflow && 
-               mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns"
+      bash -c "pip install mlflow && mlflow server 
+      --host 0.0.0.0 
+      --port 5000 
+      --backend-store-uri sqlite:///mlflow.db 
+      --default-artifact-root ./mlruns"
       
   postgres:
     container_name: postgres

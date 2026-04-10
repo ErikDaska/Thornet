@@ -6,3 +6,7 @@ outputs/
 pycache/
 /.dvc
 /.env
+mlruns/
+dags/__pycache__/
+src/datasets/__pycache__
+src/training/models/__pycache__

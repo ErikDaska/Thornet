@@ -1,7 +1,7 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 from datetime import datetime, timedelta
-from airflow.models.param import Param
+from airflow.sdk import Param
 
 
 # Default arguments applied to all tasks in the DAG
@@ -16,14 +16,14 @@ default_args = {
 
 # DAG context
 with DAG(
-    dag_id='thornet_mlops_pipeline',
+    dag_id='data_ingestion_processing_pipeline',
     default_args=default_args,
-    description='End-to-End MLOps Pipeline for Tornado Forecasting',
+    description='Data Ingestion and Processing Pipeline for Tornado Forecasting',
     schedule='@daily',
     start_date=datetime(2026, 3, 23),
     catchup=False,
     max_active_runs=1,
-    tags=['tornado_capstone', 'data_ingestion'],
+    tags=['tornado_capstone', 'training'],
     params={
         "target_year": Param(2013, type="integer", description="Year of the Tornet dataset to process (2013-2022)")
     }
@@ -32,7 +32,7 @@ with DAG(
     ingest_data = BashOperator(
         task_id='ingest_tornet_data',
         bash_command=(
-            'cd /opt/airflow && python src/data_ingestion/data_ingestion.py '
+            'cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/data_ingestion/data_ingestion.py '
             'tracking.uri="http://mlflow_server:5000" '
             'tracking.experiment_name="Airflow_Automated_Run" '
             'api.dataset.target_year="{{ params.target_year }}"'
@@ -42,33 +42,12 @@ with DAG(
     data_process = BashOperator(
         task_id='process_tornet_data',
         bash_command=(
-            'cd /opt/airflow && python src/data_processing/data_processing.py '
+            'cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/data_processing/data_processing.py '
             'tracking.uri="http://mlflow_server:5000" '
             'tracking.experiment_name="Airflow_Automated_Run" '
             'api.dataset.target_year="{{ params.target_year }}"'
         )
     )
 
-    # Task 3: Model Training
-    train_model = BashOperator(
-        task_id='train_thornet_cnn_model',
-        bash_command=(
-            'cd /opt/airflow && python src/training/train_model.py '
-            'tracking.uri="http://mlflow_server:5000" '
-            'tracking.experiment_name="Airflow_Automated_Run" '
-            'api.dataset.target_year="{{ params.target_year }}"'
-        )
-    )
 
-    # Task 4: Model Evaluation
-    evaluate_model = BashOperator(
-        task_id='evaluate_best_model',
-        bash_command=(
-            'cd /opt/airflow && python src/evaluation/evaluate_model.py '
-            'tracking.uri="http://mlflow_server:5000" '
-            'tracking.experiment_name="Airflow_Automated_Run" ' 
-            'api.dataset.target_year="{{ params.target_year }}"'
-        )
-    )
-
-    ingest_data >> data_process >> train_model >> evaluate_model
+    ingest_data >> data_process

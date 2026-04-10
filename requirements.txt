@@ -8,6 +8,7 @@ h5netcdf==1.8.1
 pyyaml==6.0.3
 omegaconf==2.3.0
 torch==2.10.0
+torchvision==0.25.0
 dask==2026.3.0
 apache-airflow==3.1.8
 zenodo_get==3.0.0

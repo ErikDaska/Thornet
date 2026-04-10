@@ -1,8 +1,18 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 from datetime import datetime, timedelta
-from airflow.models.param import Param
+from airflow.sdk import Param
+import os
 
+
+CONF_MODEL_DIR = "/opt/airflow/conf/model"
+try:
+    available_models = [f.replace('.yaml', '') for f in os.listdir(CONF_MODEL_DIR) if f.endswith('.yaml')]
+except FileNotFoundError:
+    # Fallback safety
+    available_models = ["cnn3d", "resnet3d", "spatialcnn"]
+
+dropdown_options = ["all"] + available_models
 
 # Default arguments applied to all tasks in the DAG
 default_args = {
@@ -10,31 +20,56 @@ default_args = {
     'depends_on_past': False,
     'email_on_failure': False,
     'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    'retries': 3,
+    'retry_delay': timedelta(seconds=10),
 }
 
 # DAG context
 with DAG(
     dag_id='training_evaluating_model',
     default_args=default_args,
-    description='End-to-End MLOps Pipeline for Tornado Forecasting',
-    schedule='@daily',
+    description='Training Pipeline for Tornado Forecasting',
+    schedule='@monthly',
     start_date=datetime(2026, 3, 23),
     catchup=False,
-    tags=['tornado_capstone', 'training']
+    tags=['tornado_capstone', 'training'],
+    params={
+            "target_model": Param(
+                default="all",
+                enum=dropdown_options,
+                description="Select 'all' to run every model, or pick a specific one to train."
+            )
+        }
 ) as dag:
 
-    # Model Training
-    train_model = BashOperator(
-        task_id='train_thornet_cnn_model',
-        bash_command='cd /opt/airflow && python src/training/train_model.py tracking.experiment_name="Airflow_Automated_Run" tracking.uri="http://mlflow_server:5000"'
-    )
+    for model_name in available_models:
+        run_logic_training = (
+            f"if [ '{{{{ params.target_model }}}}' = 'all' ] || [ '{{{{ params.target_model }}}}' = '{model_name}' ]; then "
+            f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/training/train_model.py model={model_name} tracking.uri='http://mlflow_server:5000' tracking.experiment_name='Airflow_Automated_Run'; "
+            "else "
+            f"echo 'Skipping {model_name} training based on UI selection.'; "
+            "exit 99; "
+            "fi"
+        )
+        # Model Training
+        train_model = BashOperator(
+            task_id=f'train_{model_name}_model',
+            bash_command=run_logic_training
+        )
 
-    # Model Evaluation
-    evaluate_model = BashOperator(
-        task_id='evaluate_best_model',
-        bash_command='cd /opt/airflow && python src/evaluation/evaluate_model.py'
-    )
+        run_logic_evaluation = (
+            f"if [ '{{{{ params.target_model }}}}' = 'all' ] || [ '{{{{ params.target_model }}}}' = '{model_name}' ]; then "
+            f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/evaluation/evaluate_model.py model={model_name} tracking.uri='http://mlflow_server:5000' tracking.experiment_name='Airflow_Automated_Run'; "
+            "else "
+            f"echo 'Skipping {model_name} evaluation based on UI selection.'; "
+            "exit 99; "
+            "fi"
+        )
 
-    train_model >> evaluate_model
+        # Model Evaluation
+        evaluate_model = BashOperator(
+            task_id=f'evaluate_{model_name}_model',
+            bash_command=run_logic_evaluation
+        )
+
+        train_model >> evaluate_model
