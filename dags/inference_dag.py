@@ -24,7 +24,7 @@ default_args = {
 with DAG(
     dag_id='tornado_inference_realtime',
     default_args=default_args,
-    description='Continuous Inference Pipeline — generates latest_predictions.csv every 5 minutes',
+    description='Continuous Inference Pipeline — generates dados_para_teste.csv every 5 minutes',
     schedule='*/5 * * * *',         # Runs every 5 minutes
     start_date=datetime(2026, 4, 10),
     catchup=False,
@@ -41,7 +41,7 @@ with DAG(
         env={
             'MLFLOW_TRACKING_URI':    'http://mlflow_server:5000',
             'MLFLOW_EXPERIMENT_NAME': 'Airflow_Automated_Run',
-            'PREDICTIONS_OUTPUT':     '/opt/airflow/data/latest_predictions.csv',
+            'PREDICTIONS_OUTPUT':     '/opt/airflow/data/dados_para_teste.csv',
             'PROCESSED_DATA_DIR':     '/opt/airflow/data/processed',
             'TARGET_YEAR':            '2013',
             'MAX_INFERENCE_SAMPLES':  '50',

@@ -143,9 +143,11 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./data:/app/data
+      - .:/app
     environment:
-      - PREDICTIONS_CSV=/app/data/latest_predictions.csv
+      - PREDICTIONS_CSV=/app/data/dados_para_teste.csv
+      - STREAMLIT_SERVER_RUN_ON_SAVE=true
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
     depends_on:
       - mlflow
     restart: unless-stopped

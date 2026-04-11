@@ -19,7 +19,9 @@ RUN pip install --no-cache-dir \
     pandas==2.2.3 \
     numpy==2.2.5 \
     folium==0.19.5 \
-    streamlit-folium==0.25.0
+    streamlit-folium==0.25.0 \
+    httpx==0.28.1 \
+    pandera==0.22.1
 
 # Copy the application
 COPY app.py /app/app.py
