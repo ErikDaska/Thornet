@@ -42,6 +42,15 @@ with DAG(
             default=2013,
             type="integer",
             description="Year of the Tornet dataset"
+        ),
+        "epochs": Param(
+            default=10,
+            type="integer",
+        ),
+        "learning_rate": Param(
+            default=0.001,
+            type="number",
+            description="Learning rate for the optimizer."
         )
     }
 ) as dag:
@@ -54,6 +63,8 @@ with DAG(
             f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/training/train_model.py "
             f"model={model_name} "
             f"api.dataset.target_year={{{{ params.target_year }}}} "
+            f"training.epochs={{{{ params.epochs }}}} "
+            f"training.learning_rate={{{{ params.learning_rate }}}} "
             f"tracking.uri='http://mlflow_server:5000' "
             f"tracking.experiment_name='Airflow_Automated_Run'; "
             "else "
