@@ -36,7 +36,7 @@ with DAG(
             'tracking.uri="http://mlflow_server:5000" '
             'tracking.experiment_name="Airflow_Automated_Run" '
             'api.dataset.target_year={{ params.target_year }} '
-            'training.epochs=10'
+            'training.epochs=20'
         )
     )
 

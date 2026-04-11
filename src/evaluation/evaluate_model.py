@@ -4,6 +4,7 @@ import random
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -19,6 +20,12 @@ import mlflow
 import mlflow.pytorch
 from torch.utils.data import DataLoader, Subset
 from datasets.tornet_dataset import TornetDataset
+
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+from pytorch_grad_cam.utils.image import show_cam_on_image
+
+from models.GRADCAM3D import GradCAM_Dynamic
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -47,38 +54,99 @@ def get_balanced_samples(pool_a, pool_b, target_a=5, target_b=5):
     return samp_a + samp_b
 
 
-def plot_image_grid(dataset, indices, title, filename):
-    """Plots a 2x5 grid of the DBZ channel for the given indices with auto-scaling."""
+def plot_image_grid(dataset, indices, title, filename, channel_idx=0, cmap='turbo'):
+    """Plots a 2x5 grid of a specific radar channel for the given indices."""
     if not indices:
         logger.warning(f"No indices provided for {title}. Skipping plot.")
         return
 
-    fig, axes = plt.subplots(2, 5, figsize=(22, 9))  # Made slightly wider to fit colorbars
+    fig, axes = plt.subplots(2, 5, figsize=(22, 9))
     fig.suptitle(title, fontsize=18, fontweight='bold')
     axes = axes.flatten()
 
     for i, idx in enumerate(indices):
-        if i >= 10: break  # Max 10 images
+        if i >= 10: break
 
         # Load the specific scan
         features, label = dataset[idx]
 
-        # Extract Channel 0 (DBZ Reflectivity), Sweep 0
-        dbz_slice = features[0, 0, :, :].numpy()
+        # Extract the requested Channel (0=DBZ, 1=VEL), Sweep 0
+        data_slice = features[channel_idx, :, :, 0].numpy()
 
         ax = axes[i]
 
-        # We removed vmin/vmax to allow auto-scaling.
-        # Swapped to 'turbo' (or 'viridis') which is much better for analyzing fluid dynamics/radar
-        im = ax.imshow(dbz_slice, cmap='turbo', aspect='auto')
+        # For Velocity (VEL), it is highly recommended to center the colormap at 0.
+        # Since the data might be normalized (e.g., to [0,1]), this attempts to auto-scale.
+        im = ax.imshow(data_slice, cmap=cmap, aspect='auto')
         ax.set_title(f"True Label: {int(label.item())}")
         ax.axis('off')
 
-        # Add a tiny colorbar to each image so you can read the actual dBZ values
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.ax.tick_params(labelsize=8)
 
-    # Hide any unused subplots if we had fewer than 10 samples
+    for j in range(i + 1, 10):
+        axes[j].axis('off')
+
+    plt.tight_layout()
+    mlflow.log_figure(fig, filename)
+    plt.close(fig)
+
+def plot_gradcam_grid(model, dataset, indices, title, filename, device):
+    """Plots a 2x5 grid of Grad-CAM overlays for the given indices."""
+    if not indices:
+        logger.warning(f"No indices provided for {title}. Skipping Grad-CAM plot.")
+        return
+
+    fig, axes = plt.subplots(2, 5, figsize=(22, 9))
+    fig.suptitle(title, fontsize=18, fontweight='bold')
+    axes = axes.flatten()
+
+    # Initialize our custom 3D CAM extractor instead of the buggy library version
+    cam_extractor = GradCAM_Dynamic(model=model, target_layer=model.block4[-2])
+
+    with torch.set_grad_enabled(True):
+        for i, idx in enumerate(indices):
+            if i >= 10: break
+
+            # Load the specific scan
+            features, label = dataset[idx]
+            input_tensor = features.unsqueeze(0).to(device)
+
+            # 1. Generate the dynamic heatmap
+            # Update the class name initialization at the top of the function to GradCAM_Dynamic too!
+            cam_raw = cam_extractor(input_tensor)
+
+            # 2. Slice the CAM only if it is still 3D. If the model already pooled
+            #    the depth away, it's already a 2D map [H, W], so no slicing is needed!
+            if cam_raw.dim() == 3:
+                cam_slice = cam_raw[:, :, 0]
+            else:
+                cam_slice = cam_raw
+
+            # 3. Get original image dimensions for resizing
+            dbz_slice = features[0, :, :, 0].numpy()
+            original_h, original_w = dbz_slice.shape
+
+            # 4. Safely resize the small CAM slice back to original dimensions using PyTorch
+            cam_resized = F.interpolate(
+                cam_slice.unsqueeze(0).unsqueeze(0), # Add fake batch/channel dims for interpolate
+                size=(original_h, original_w),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze().cpu().numpy()
+
+            # Normalize background image to [0, 1] for the overlay utility
+            img_normalized = (dbz_slice - np.min(dbz_slice)) / (np.max(dbz_slice) - np.min(dbz_slice) + 1e-8)
+            rgb_image = np.stack((img_normalized,) * 3, axis=-1)
+
+            # Overlay heatmap on radar image
+            visualization = show_cam_on_image(rgb_image, cam_resized, use_rgb=True)
+
+            ax = axes[i]
+            ax.imshow(visualization, aspect='auto')
+            ax.set_title(f"True Label: {int(label.item())}")
+            ax.axis('off')
+
     for j in range(i + 1, 10):
         axes[j].axis('off')
 
@@ -222,9 +290,23 @@ def evaluate(cfg: DictConfig):
         incorrect_samples = get_balanced_samples(fp_idx, fn_idx, target_a=5, target_b=5)
 
         logger.info("Plotting Image Grids...")
-        plot_image_grid(test_dataset, correct_samples, "Correctly Classified Scans", "correct_predictions_grid.png")
-        plot_image_grid(test_dataset, incorrect_samples, "Incorrectly Classified Scans",
-                        "incorrect_predictions_grid.png")
+        # Plot Reflectivity (DBZ) - Channel 0
+        plot_image_grid(test_dataset, correct_samples, "Correctly Classified: Reflectivity (DBZ)",
+                        "correct_dbz_grid.png", channel_idx=0, cmap='turbo')
+        plot_image_grid(test_dataset, incorrect_samples, "Incorrectly Classified: Reflectivity (DBZ)",
+                        "incorrect_dbz_grid.png", channel_idx=0, cmap='turbo')
+
+        # Plot Velocity (VEL) - Channel 1
+        plot_image_grid(test_dataset, correct_samples, "Correctly Classified: Velocity (VEL)",
+                        "correct_vel_grid.png", channel_idx=1, cmap='RdBu_r')
+        plot_image_grid(test_dataset, incorrect_samples, "Incorrectly Classified: Velocity (VEL)",
+                        "incorrect_vel_grid.png", channel_idx=1, cmap='RdBu_r')
+
+        logger.info("Plotting Grad-CAM Explanation Grids...")
+        plot_gradcam_grid(model, test_dataset, correct_samples, "Grad-CAM: Correct Predictions", "gradcam_correct.png",
+                          device)
+        plot_gradcam_grid(model, test_dataset, incorrect_samples, "Grad-CAM: Incorrect Predictions",
+                          "gradcam_incorrect.png", device)
 
     logger.info("Evaluation complete! Check MLflow UI for metrics and plots.")
 
