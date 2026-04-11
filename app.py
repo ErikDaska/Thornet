@@ -16,6 +16,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 import pandera as pa
 from pandera.typing import Series
+import httpx
 
 # Define the expected structure of our data
 PredictionSchema = pa.DataFrameSchema({
@@ -48,7 +49,8 @@ load_css("css/style.css")
 
 
 # CONSTANTS
-PREDICTIONS_PATH = Path(os.getenv("PREDICTIONS_CSV", "/app/data/dados_para_teste.csv")) #MUDAR PARA A FAST API
+PREDICTIONS_PATH = Path(os.getenv("PREDICTIONS_CSV", "/app/data/dados_para_teste.csv")) 
+API_URL = os.getenv("API_URL", "http://fastapi-service:80")
 REFRESH_INTERVAL_SECONDS = 30
 
 ALERT_COLORS = {
@@ -210,6 +212,7 @@ with st.sidebar:
     st.markdown("## 🌪️ TorNet")
     st.markdown('<p style="color:#64748b;font-size:0.85rem;margin-top:-8px">Tornado Alert Dashboard</p>',
                 unsafe_allow_html=True)
+
     st.divider()
 
     st.markdown('<p class="section-header">📍 Location</p>', unsafe_allow_html=True)
@@ -267,6 +270,25 @@ with st.sidebar:
         st.rerun()
 
     st.caption(f"📂 `{PREDICTIONS_PATH}`")
+
+    # API STATUS INDICATOR (Moved to bottom)
+    st.markdown("<br><br>", unsafe_allow_html=True) # Spacer
+    st.divider()
+    st.markdown('<p class="section-header" style="font-size:0.75rem">🔌 Backend Status</p>', unsafe_allow_html=True)
+    
+    api_online = False
+    try:
+        with httpx.Client(timeout=1.0) as client:
+            resp = client.get(f"{API_URL}/")
+            api_online = resp.status_code == 200
+    except Exception:
+        api_online = False
+
+    if api_online:
+        st.markdown('<span style="color:#10b981; font-weight:700">● ONLINE</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span style="color:#ef4444; font-weight:700">○ OFFLINE</span>', unsafe_allow_html=True)
+        st.caption("Using CSV fallback.")
 
 
 # LOAD DATA
