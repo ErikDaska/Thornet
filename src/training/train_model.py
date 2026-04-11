@@ -12,6 +12,7 @@ import hydra
 from omegaconf import DictConfig
 import mlflow
 import mlflow.pytorch
+from mlflow.models import infer_signature
 import os
 from datetime import datetime
 
@@ -275,7 +276,26 @@ def train(cfg: DictConfig):
         )
 
         logger.info("Training complete. Saving model manually to MLflow...")
-        mlflow.pytorch.log_model(model, "model")
+
+        # 1. Infer the model signature (Highly recommended for mixed 2D/3D architectures)
+        # We grab one batch from the validation loader just to get the exact input/output shapes
+        sample_input, _ = next(iter(val_loader))
+        sample_input = sample_input.to(device)
+        model.eval()
+        with torch.no_grad():
+            sample_output = model(sample_input)
+            
+        signature = infer_signature(sample_input.cpu().numpy(), sample_output.cpu().numpy())
+
+        # 2. Log  the model
+        registry_name = f"Tornet-{cfg.model.name}"
+        
+        mlflow.pytorch.log_model(
+            pytorch_model=model,
+            artifact_path="model",
+            signature=signature,
+        )
+        mlflow.set_tag("architecture", registry_name)
 
         # Log Plotly HTML and training history JSON
         with tempfile.TemporaryDirectory() as tmpdir:

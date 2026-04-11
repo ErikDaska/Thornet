@@ -20,6 +20,7 @@ import hydra
 from omegaconf import DictConfig
 import mlflow
 import mlflow.pytorch
+from mlflow.tracking import MlflowClient
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
 
@@ -199,7 +200,7 @@ def evaluate(cfg: DictConfig):
     experiment_name = cfg.tracking.experiment_name
     mlflow.set_experiment(experiment_name)
 
-    # Dynamically search for the current model's latest run, not just 3dcnn
+    # Dynamically search for the current model's latest run
     logger.info("Searching for the latest successful training run...")
     runs = mlflow.search_runs(
         experiment_names=[cfg.tracking.experiment_name],
@@ -262,9 +263,6 @@ def evaluate(cfg: DictConfig):
 
     # --- CALCULATE METRICS ---
     acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
 
     fpr, tpr, thresholds = roc_curve(y_true, y_scores)
     roc_auc = auc(fpr, tpr)
@@ -385,8 +383,46 @@ def evaluate(cfg: DictConfig):
                           device)
         plot_gradcam_grid(model, test_dataset, incorrect_samples, "Grad-CAM: Incorrect Predictions",
                           "gradcam_incorrect.png", device)
+        
 
-    logger.info("Evaluation complete. Results and interactive plots are in MLflow!")
+        logger.info("--- Starting Registry Gatekeeper ---")
+        MINIMUM_AP_THRESHOLD = 0.85
+
+        if avg_precision < MINIMUM_AP_THRESHOLD:
+            logger.warning(f"Model failed baseline threshold ({avg_precision:.3f} < {MINIMUM_AP_THRESHOLD}).")
+            # Stop execution here. Do not register.
+        
+
+        client = MlflowClient()
+        registry_name = f"Tornet-{cfg.model.name}"
+
+        try:
+            # Fetch the latest registered version of this specific architecture
+            latest_versions = client.get_latest_versions(name=registry_name)
+            current_champion = latest_versions[0] # Assuming the latest is the active one
+            
+            # Fetch the run data that produced this champion to get its metrics
+            champion_run = client.get_run(current_champion.run_id)
+            champion_ap = champion_run.data.metrics.get("eval_avg_precision", 0.0)
+            
+        except Exception as e:
+            # If the registry doesn't exist yet (this is the first ever run)
+            logger.info(f"No existing registered model found for {registry_name}. Defaulting champion AP to 0.")
+            champion_ap = 0.0
+
+        # The Final Decision
+        if avg_precision > champion_ap:
+            logger.info(f"New Champion! AP: {avg_precision:.3f} beat Old AP: {champion_ap:.3f}")
+            
+            # Promote to Registry
+            mlflow.register_model(
+                model_uri=f"runs:/{latest_run_id}/model",
+                name=registry_name
+            )
+        else:
+            logger.info(f"Challenger defeated. AP: {avg_precision:.3f} did not beat Old AP: {champion_ap:.3f}. Discarding.")
+
+            logger.info("Evaluation complete. Results and interactive plots are in MLflow!")
 
 
 if __name__ == "__main__":
