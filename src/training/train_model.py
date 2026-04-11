@@ -32,7 +32,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class BinaryFocalLossWithLogits(nn.Module):
-    # ... (Keep your Focal Loss class exactly as is) ...
+    """
+    Focal Loss designed to prevent Mode Collapse in heavily imbalanced spatial maps.
+    It dynamically scales the loss based on the model's confidence, forcing it to
+    pay attention to the rare positive (tornado) cases instead of spamming '0'.
+
+    Args:
+        alpha (float):
+            A standard weighting factor applied to the focal penalty. It acts as a
+            baseline multiplier for the overall focal weight. (Default: 0.75)
+
+        gamma (float):
+            The "focusing" parameter. This is the core of Focal Loss.
+            - If gamma = 0, this acts exactly like standard BCE.
+            - As gamma increases (e.g., 2.0 or higher), the loss for "easy"
+              predictions (like the massive amounts of empty, non-tornado space
+              the model is highly confident is a 0) gets exponentially pushed toward 0.
+            - This forces the model's gradients to exclusively update based on the
+              "hard" examples (the actual, rare tornadoes).
+
+        pos_weight (torch.Tensor):
+            Passed directly into the underlying BCEWithLogitsLoss. This dictates the
+            base ratio of importance between the positive and negative class.
+            For extreme imbalance, this is usually set to (Num_Negatives / Num_Positives).
+            If a tornado represents 1 in 100,000 pixels, pos_weight violently scales
+            up the gradient of that single pixel so the model can't ignore it.
+    """
+
     def __init__(self, alpha=0.75, gamma=2.0, pos_weight=None):
         super().__init__()
         self.alpha = alpha
@@ -40,12 +66,20 @@ class BinaryFocalLossWithLogits(nn.Module):
         self.pos_weight = pos_weight
 
     def forward(self, inputs, targets):
+        # Calculate standard BCE
         bce_loss = F.binary_cross_entropy_with_logits(
             inputs, targets, reduction='none', pos_weight=self.pos_weight
         )
+
+        # Calculate probabilities to determine confidence
         probs = torch.sigmoid(inputs)
+
+        # pt is the predicted probability for the TRUE class
         pt = torch.where(targets == 1, probs, 1 - probs)
+
+        # Apply the focal multiplier: (1 - pt)^gamma
         focal_weight = self.alpha * (1 - pt) ** self.gamma
+
         return (focal_weight * bce_loss).mean()
 
 # --- MAIN TRAINING LOOP ---
@@ -115,7 +149,15 @@ def train(cfg: DictConfig):
     model_kwargs = dict(cfg.model.get("params", {}))
     model_kwargs.setdefault("in_channels", len(dataset.variables))
     model = get_model(cfg.model.name, **model_kwargs).to(device)
-    criterion = nn.BCEWithLogitsLoss() # Or BinaryFocalLossWithLogits() if you want to use your custom loss
+
+    # --- HEAVY LOSS PENALIZER SETUP ---
+    # Calculate the ratio of negative to positive samples to heavily weight the rare tornadoes
+    num_pos = sum(y_train)
+    num_neg = len(y_train) - num_pos
+    calculated_pos_weight = torch.tensor([num_neg / float(num_pos)], dtype=torch.float32).to(device)
+    logger.info(f"Calculated pos_weight for Focal Loss: {calculated_pos_weight.item():.2f}")
+
+    criterion = BinaryFocalLossWithLogits(alpha=0.75, gamma=2.0, pos_weight=calculated_pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # Configure MLflow

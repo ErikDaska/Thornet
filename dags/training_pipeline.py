@@ -1,6 +1,6 @@
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
-from airflow.models.param import Param
+from airflow.sdk import Param
 from datetime import datetime, timedelta
 import os
 
@@ -9,7 +9,7 @@ try:
     available_models = [f.replace('.yaml', '') for f in os.listdir(CONF_MODEL_DIR) if f.endswith('.yaml')]
 except FileNotFoundError:
     # Fallback safety
-    available_models = ["cnn3d", "resnet3d", "spatialcnn"]
+    available_models = ["cnn3d", "cnn2d", "resnet3d", "spatialcnn"]
 
 dropdown_options = ["all"] + available_models
 

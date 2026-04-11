@@ -3,6 +3,7 @@ from typing import Any
 
 MODEL_REGISTRY = {
     "3DCNN": ("training.models.cnn3d", "Tornet3DCNN"),
+    "2DCNN": ("training.models.cnn2d", "Tornet2DCNN"),
     "ResNet3D": ("training.models.resnet3d", "TornetResNet3D"),
     "SpatialCNN": ("training.models.spatialcnn" , "SpatialCNN_GRU"),
 }

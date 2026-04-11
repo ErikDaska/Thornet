@@ -24,13 +24,13 @@ import plotly.graph_objects as go
 import plotly.figure_factory as ff
 
 from datasets.tornet_dataset import TornetDataset
-from training.models import get_model # Ensures models are in context for MLflow
+from training.models import get_model  # Ensures models are in context for MLflow
 
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
-from models.GRADCAM3D import GradCAM_Dynamic
+from evaluation.models.grad_cam import GradCAM_Dynamic
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -38,6 +38,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
 
 def get_balanced_samples(pool_a, pool_b, target_a=5, target_b=5):
     """Helper to try to get 5 of A and 5 of B. If one is short, fill with the other."""
@@ -96,6 +97,30 @@ def plot_image_grid(dataset, indices, title, filename, channel_idx=0, cmap='turb
     mlflow.log_figure(fig, filename)
     plt.close(fig)
 
+def get_gradcam_target_layer(model):
+    """
+    Dynamically identifies the final spatial feature layer for Grad-CAM
+    based on the model's architecture.
+    """
+    if hasattr(model, 'block4'):
+        # Tornet2DCNN: Target the MaxPool2d or ReLU in the last block
+        return model.block4[-2]
+
+    elif hasattr(model, 'features'):
+        # Tornet3DCNN: Target the final MaxPool3d in the features sequential
+        return model.features[-1]
+
+    elif hasattr(model, 'model') and hasattr(model.model, 'layer4'):
+        # TornetResNet3D: Target the final residual block of the r3d_18 model
+        return model.model.layer4[-1]
+
+    elif hasattr(model, 'spatial_cnn'):
+        # SpatialCNN_GRU: Target the layer right before AdaptiveAvgPool2d
+        return model.spatial_cnn[-2]
+
+    else:
+        raise ValueError(f"Unknown model architecture for Grad-CAM: {type(model).__name__}")
+
 def plot_gradcam_grid(model, dataset, indices, title, filename, device):
     """Plots a 2x5 grid of Grad-CAM overlays for the given indices."""
     if not indices:
@@ -106,10 +131,14 @@ def plot_gradcam_grid(model, dataset, indices, title, filename, device):
     fig.suptitle(title, fontsize=18, fontweight='bold')
     axes = axes.flatten()
 
-    # Initialize our custom 3D CAM extractor instead of the buggy library version
-    cam_extractor = GradCAM_Dynamic(model=model, target_layer=model.block4[-2])
+    # Dynamically find the correct layer based on the current model
+    target_layer = get_gradcam_target_layer(model)
+    logger.info(f"Targeting layer for Grad-CAM: {target_layer}")
 
-    with torch.set_grad_enabled(True):
+    # Initialize our custom 3D CAM extractor
+    cam_extractor = GradCAM_Dynamic(model=model, target_layer=target_layer)
+
+    with torch.set_grad_enabled(True), torch.backends.cudnn.flags(enabled=False):
         for i, idx in enumerate(indices):
             if i >= 10: break
 
@@ -134,7 +163,7 @@ def plot_gradcam_grid(model, dataset, indices, title, filename, device):
 
             # 4. Safely resize the small CAM slice back to original dimensions using PyTorch
             cam_resized = F.interpolate(
-                cam_slice.unsqueeze(0).unsqueeze(0), # Add fake batch/channel dims for interpolate
+                cam_slice.unsqueeze(0).unsqueeze(0),  # Add fake batch/channel dims for interpolate
                 size=(original_h, original_w),
                 mode='bilinear',
                 align_corners=False
@@ -159,6 +188,7 @@ def plot_gradcam_grid(model, dataset, indices, title, filename, device):
     mlflow.log_figure(fig, filename)
     plt.close(fig)
 
+
 # --- MAIN EVALUATION PIPELINE ---
 @hydra.main(version_base="1.3", config_path="../../conf", config_name="config")
 def evaluate(cfg: DictConfig):
@@ -169,7 +199,7 @@ def evaluate(cfg: DictConfig):
     experiment_name = cfg.tracking.experiment_name
     mlflow.set_experiment(experiment_name)
 
-    # FIXED: Dynamically search for the current model's latest run, not just 3dcnn
+    # Dynamically search for the current model's latest run, not just 3dcnn
     logger.info("Searching for the latest successful training run...")
     runs = mlflow.search_runs(
         experiment_names=[cfg.tracking.experiment_name],
@@ -177,7 +207,7 @@ def evaluate(cfg: DictConfig):
         order_by=["start_time DESC"],
         max_results=1
     )
-    
+
     if runs.empty:
         logger.error(f"No MLflow runs found for {cfg.model.name}. Please train the model first.")
         return
@@ -228,7 +258,7 @@ def evaluate(cfg: DictConfig):
     # FIXED: Properly convert populated lists to arrays
     y_true = np.array(y_true)
     y_scores = np.array(y_scores)
-    y_pred = (y_scores > 0.5).astype(int) # Create binary predictions from scores
+    y_pred = (y_scores > 0.5).astype(int)  # Create binary predictions from scores
 
     # --- CALCULATE METRICS ---
     acc = accuracy_score(y_true, y_pred)
@@ -264,16 +294,17 @@ def evaluate(cfg: DictConfig):
         logger.info("Generating and logging Plotly evaluation graphs...")
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # 1. Data Distribution (Converted to Plotly)
+        # Data Distribution (Converted to Plotly)
         class_counts = pd.Series(y_true).value_counts()
         labels_map = {0.0: "No Tornado", 1.0: "Tornado"}
         pie_labels = [labels_map.get(k, k) for k in class_counts.index]
 
-        fig_pie = go.Figure(data=[go.Pie(labels=pie_labels, values=class_counts.values, hole=.3, marker_colors=['#66b3ff', '#ff9999'])])
+        fig_pie = go.Figure(
+            data=[go.Pie(labels=pie_labels, values=class_counts.values, hole=.3, marker_colors=['#66b3ff', '#ff9999'])])
         fig_pie.update_layout(title="Test Set Data Distribution", template='plotly_white')
         mlflow.log_figure(fig_pie, f"data_distribution_{cfg.model.name}_{current_time}.html")
 
-        # 2. ROC Curve
+        # ROC Curve
         fig_roc = go.Figure()
         fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines',
                                      name=f'ROC Curve (AUC = {roc_auc:.3f})',
@@ -289,7 +320,7 @@ def evaluate(cfg: DictConfig):
         )
         mlflow.log_figure(fig_roc, f"roc_curve_plot_{cfg.model.name}_{current_time}.html")
 
-        # 3. Precision-Recall Curve
+        # Precision-Recall Curve
         fig_pr = go.Figure()
         fig_pr.add_trace(go.Scatter(x=recall, y=precision, mode='lines',
                                     name=f'PR Curve (AP = {avg_precision:.3f})',
@@ -302,7 +333,7 @@ def evaluate(cfg: DictConfig):
         )
         mlflow.log_figure(fig_pr, f"precision_recall_curve_{cfg.model.name}_{current_time}.html")
 
-        # 4. Confusion Matrix
+        # Confusion Matrix
         classes = ['No Tornado', 'Tornado']
         z_cm = cm.tolist()
         fig_cm = ff.create_annotated_heatmap(
@@ -312,9 +343,29 @@ def evaluate(cfg: DictConfig):
         fig_cm.update_layout(
             title=f'Confusion Matrix - {cfg.model.name}',
             xaxis_title='Predicted Class', yaxis_title='True Class',
+            yaxis=dict(autorange='reversed'),
             template='plotly_white'
         )
         mlflow.log_figure(fig_cm, f"confusion_matrix_{cfg.model.name}_{current_time}.html")
+
+        # --- MISSING LOGIC ADDED HERE ---
+        logger.info("Identifying images for visual grids...")
+        tp_idx, tn_idx, fp_idx, fn_idx = [], [], [], []
+
+        for i in range(len(y_true)):
+            if y_true[i] == 1.0 and y_pred[i] == 1.0:
+                tp_idx.append(i)
+            elif y_true[i] == 0.0 and y_pred[i] == 0.0:
+                tn_idx.append(i)
+            elif y_true[i] == 0.0 and y_pred[i] == 1.0:
+                fp_idx.append(i)
+            elif y_true[i] == 1.0 and y_pred[i] == 0.0:
+                fn_idx.append(i)
+
+        # Get samples for grids
+        correct_samples = get_balanced_samples(tp_idx, tn_idx, target_a=5, target_b=5)
+        incorrect_samples = get_balanced_samples(fp_idx, fn_idx, target_a=5, target_b=5)
+        # --------------------------------
 
         logger.info("Plotting Image Grids...")
         # Plot Reflectivity (DBZ) - Channel 0
@@ -334,7 +385,9 @@ def evaluate(cfg: DictConfig):
                           device)
         plot_gradcam_grid(model, test_dataset, incorrect_samples, "Grad-CAM: Incorrect Predictions",
                           "gradcam_incorrect.png", device)
+
     logger.info("Evaluation complete. Results and interactive plots are in MLflow!")
+
 
 if __name__ == "__main__":
     evaluate()
