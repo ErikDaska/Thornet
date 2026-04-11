@@ -2,7 +2,7 @@ defaults:
   - paths: default
   - api: tornet
   - tracking: mlflow
-  - training: 3dcnn
+  - model: 3dcnn
   - _self_
 
 project_name: "ThorNet"

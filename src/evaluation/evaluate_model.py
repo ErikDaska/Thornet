@@ -2,24 +2,29 @@ import logging
 import os
 import random
 from pathlib import Path
+from datetime import datetime
 
 import torch
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.metrics import (
     precision_score, recall_score, f1_score,
-    roc_auc_score, confusion_matrix, accuracy_score
+    accuracy_score, roc_curve, auc, precision_recall_curve,
+    average_precision_score, classification_report, confusion_matrix
 )
+from torch.utils.data import DataLoader, Subset
 
 import hydra
 from omegaconf import DictConfig
 import mlflow
 import mlflow.pytorch
-from torch.utils.data import DataLoader, Subset
+import plotly.graph_objects as go
+import plotly.figure_factory as ff
+
 from datasets.tornet_dataset import TornetDataset
+from training.models import get_model # Ensures models are in context for MLflow
 
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
@@ -157,26 +162,24 @@ def plot_gradcam_grid(model, dataset, indices, title, filename, device):
 # --- MAIN EVALUATION PIPELINE ---
 @hydra.main(version_base="1.3", config_path="../../conf", config_name="config")
 def evaluate(cfg: DictConfig):
-    logger.info("--- Starting Model Evaluation ---")
+    logger.info(f"--- Starting {cfg.model.name} Model Evaluation ---")
 
     # Set up MLflow
-    mlflow.set_registry_uri("sqlite:////mlflow/mlflow.db")
     mlflow.set_tracking_uri(cfg.tracking.uri)
     experiment_name = cfg.tracking.experiment_name
-    os.environ['MLFLOW_ARTIFACT_ROOT'] = "/mlruns"
     mlflow.set_experiment(experiment_name)
 
-    # Find the latest run in the experiment that has a model logged
+    # FIXED: Dynamically search for the current model's latest run, not just 3dcnn
     logger.info("Searching for the latest successful training run...")
     runs = mlflow.search_runs(
         experiment_names=[cfg.tracking.experiment_name],
-        filter_string="tags.mlflow.runName LIKE '3dcnn_training_%'",
+        filter_string=f"tags.mlflow.runName LIKE '{cfg.model.name}_training_%'",
         order_by=["start_time DESC"],
         max_results=1
     )
     
     if runs.empty:
-        logger.error("No MLflow runs found. Please train the model first.")
+        logger.error(f"No MLflow runs found for {cfg.model.name}. Please train the model first.")
         return
 
     latest_run_id = runs.iloc[0].run_id
@@ -202,92 +205,116 @@ def evaluate(cfg: DictConfig):
 
     test_indices = pd.read_csv(test_indices_path)['test_index'].tolist()
     test_dataset = Subset(full_dataset, test_indices)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
 
-    # RUN EVALUATION LOOP
-    all_preds, all_labels, all_probs = [], [], []
-
+    # --- RUN EVALUATION LOOP ---
     logger.info("Running test set through the model...")
+    y_true = []
+    y_scores = []
+
     with torch.no_grad():
         for inputs, labels in test_loader:
             inputs = inputs.to(device)
             outputs = model(inputs)
-
             probs = torch.sigmoid(outputs).cpu().numpy().flatten()
-            preds = (probs > 0.5).astype(float)
 
-            all_probs.extend(probs)
-            all_preds.extend(preds)
-            all_labels.extend(labels.numpy().flatten())
+            y_scores.extend(probs)
+            y_true.extend(labels.numpy())
 
-    y_true = np.array(all_labels)
-    y_pred = np.array(all_preds)
-    y_prob = np.array(all_probs)
+    if not y_true:
+        logger.warning("No data found for evaluation.")
+        return
 
-    # CALCULATE METRICS ---
+    # FIXED: Properly convert populated lists to arrays
+    y_true = np.array(y_true)
+    y_scores = np.array(y_scores)
+    y_pred = (y_scores > 0.5).astype(int) # Create binary predictions from scores
+
+    # --- CALCULATE METRICS ---
     acc = accuracy_score(y_true, y_pred)
     prec = precision_score(y_true, y_pred, zero_division=0)
     rec = recall_score(y_true, y_pred, zero_division=0)
     f1 = f1_score(y_true, y_pred, zero_division=0)
 
-    try:
-        auc = roc_auc_score(y_true, y_prob)
-    except ValueError:
-        auc = 0.0  # Occurs if only one class is present in the test set
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    roc_auc = auc(fpr, tpr)
+    logger.info(f"Calculated ROC AUC: {roc_auc:.4f}")
 
-    logger.info(f"Test Results -> Acc: {acc:.4f} | Precision: {prec:.4f} | Recall: {rec:.4f} | F1: {f1:.4f} | AUC: {auc:.4f}")
+    precision, recall, _ = precision_recall_curve(y_true, y_scores)
+    avg_precision = average_precision_score(y_true, y_scores)
+    logger.info(f"Calculated Average Precision: {avg_precision:.4f}")
 
-    # LOGGING AND PLOTTING TO MLFLOW
-    run_name = f"evaluation_{cfg.api.dataset.target_year}"
-    with mlflow.start_run(run_name=run_name):
-        # Log Metrics
-        mlflow.log_metrics({
-            "test_accuracy": acc,
-            "test_precision": prec,
-            "test_recall": rec,
-            "test_f1": f1,
-            "test_auc": auc
-        })
+    report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+    logger.info(f"Classification Report:\n{classification_report(y_true, y_pred, zero_division=0)}")
 
-        # PLOT 1: Data Distribution (Tornado vs No Tornado)
-        logger.info("Plotting data distribution...")
-        fig1, ax1 = plt.subplots(figsize=(6, 6))
+    cm = confusion_matrix(y_true, y_pred)
+    logger.info(f"Confusion Matrix:\n{cm}")
+
+    # Resume the MLflow run to attach evaluation metrics and artifacts
+    with mlflow.start_run(run_id=latest_run_id):
+
+        mlflow.log_metric("eval_roc_auc", roc_auc)
+        mlflow.log_metric("eval_avg_precision", avg_precision)
+        mlflow.log_metric("eval_precision", report['weighted avg']['precision'])
+        mlflow.log_metric("eval_recall", report['weighted avg']['recall'])
+        mlflow.log_metric("eval_f1_score", report['weighted avg']['f1-score'])
+        mlflow.log_metric("eval_accuracy", acc)
+
+        # --- PLOTLY GRAPHS ---
+        logger.info("Generating and logging Plotly evaluation graphs...")
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 1. Data Distribution (Converted to Plotly)
         class_counts = pd.Series(y_true).value_counts()
         labels_map = {0.0: "No Tornado", 1.0: "Tornado"}
-        ax1.pie(class_counts, labels=[labels_map.get(k, k) for k in class_counts.index],
-                autopct='%1.1f%%', startangle=90, colors=['#66b3ff', '#ff9999'])
-        ax1.set_title("Test Set Data Distribution")
-        mlflow.log_figure(fig1, "data_distribution.png")
-        plt.close(fig1)
+        pie_labels = [labels_map.get(k, k) for k in class_counts.index]
 
-        # PLOT 2: Confusion Matrix
-        logger.info("Plotting confusion matrix...")
-        cm = confusion_matrix(y_true, y_pred)
-        fig2, ax2 = plt.subplots(figsize=(6, 5))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax2,
-                    xticklabels=["Predicted No Tor", "Predicted Tor"],
-                    yticklabels=["Actual No Tor", "Actual Tor"])
-        ax2.set_title("Confusion Matrix")
-        mlflow.log_figure(fig2, "confusion_matrix.png")
-        plt.close(fig2)
+        fig_pie = go.Figure(data=[go.Pie(labels=pie_labels, values=class_counts.values, hole=.3, marker_colors=['#66b3ff', '#ff9999'])])
+        fig_pie.update_layout(title="Test Set Data Distribution", template='plotly_white')
+        mlflow.log_figure(fig_pie, f"data_distribution_{cfg.model.name}_{current_time}.html")
 
-        # PLOT 3 & 4: Image Analysis (Categorize indices)
-        logger.info("Identifying images for visual grids...")
-        tp_idx, tn_idx, fp_idx, fn_idx = [], [], [], []
+        # 2. ROC Curve
+        fig_roc = go.Figure()
+        fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines',
+                                     name=f'ROC Curve (AUC = {roc_auc:.3f})',
+                                     line=dict(color='darkorange', width=2)))
+        fig_roc.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines',
+                                     name='Random Classifier',
+                                     line=dict(color='navy', width=2, dash='dash')))
+        fig_roc.update_layout(
+            title=f'ROC Curve - {cfg.model.name}',
+            xaxis_title='False Positive Rate', yaxis_title='True Positive Rate',
+            xaxis=dict(range=[0.0, 1.0]), yaxis=dict(range=[0.0, 1.05]),
+            template='plotly_white'
+        )
+        mlflow.log_figure(fig_roc, f"roc_curve_plot_{cfg.model.name}_{current_time}.html")
 
-        for i in range(len(y_true)):
-            if y_true[i] == 1.0 and y_pred[i] == 1.0:
-                tp_idx.append(i)
-            elif y_true[i] == 0.0 and y_pred[i] == 0.0:
-                tn_idx.append(i)
-            elif y_true[i] == 0.0 and y_pred[i] == 1.0:
-                fp_idx.append(i)
-            elif y_true[i] == 1.0 and y_pred[i] == 0.0:
-                fn_idx.append(i)
+        # 3. Precision-Recall Curve
+        fig_pr = go.Figure()
+        fig_pr.add_trace(go.Scatter(x=recall, y=precision, mode='lines',
+                                    name=f'PR Curve (AP = {avg_precision:.3f})',
+                                    line=dict(color='blue', width=2)))
+        fig_pr.update_layout(
+            title=f'Precision-Recall Curve - {cfg.model.name}',
+            xaxis_title='Recall', yaxis_title='Precision',
+            xaxis=dict(range=[0.0, 1.0]), yaxis=dict(range=[0.0, 1.05]),
+            template='plotly_white'
+        )
+        mlflow.log_figure(fig_pr, f"precision_recall_curve_{cfg.model.name}_{current_time}.html")
 
-        # Get samples for grids
-        correct_samples = get_balanced_samples(tp_idx, tn_idx, target_a=5, target_b=5)
-        incorrect_samples = get_balanced_samples(fp_idx, fn_idx, target_a=5, target_b=5)
+        # 4. Confusion Matrix
+        classes = ['No Tornado', 'Tornado']
+        z_cm = cm.tolist()
+        fig_cm = ff.create_annotated_heatmap(
+            z=z_cm, x=classes, y=classes,
+            colorscale='Oranges', showscale=True, annotation_text=z_cm
+        )
+        fig_cm.update_layout(
+            title=f'Confusion Matrix - {cfg.model.name}',
+            xaxis_title='Predicted Class', yaxis_title='True Class',
+            template='plotly_white'
+        )
+        mlflow.log_figure(fig_cm, f"confusion_matrix_{cfg.model.name}_{current_time}.html")
 
         logger.info("Plotting Image Grids...")
         # Plot Reflectivity (DBZ) - Channel 0
@@ -307,8 +334,7 @@ def evaluate(cfg: DictConfig):
                           device)
         plot_gradcam_grid(model, test_dataset, incorrect_samples, "Grad-CAM: Incorrect Predictions",
                           "gradcam_incorrect.png", device)
-
-    logger.info("Evaluation complete! Check MLflow UI for metrics and plots.")
+    logger.info("Evaluation complete. Results and interactive plots are in MLflow!")
 
 if __name__ == "__main__":
     evaluate()
