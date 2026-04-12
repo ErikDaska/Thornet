@@ -1,7 +1,7 @@
 
 # Dockerfile.streamlit
 # Container for the Tornado Alert Dashboard
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
