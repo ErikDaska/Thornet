@@ -29,6 +29,20 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/18/docker
 
+  data-downloader:
+    container_name: radar-data-init
+    image: curlimages/curl:latest
+    volumes:
+      - ./data/radars:/data/radars
+    command: >
+      sh -c "if [ ! -f /data/radars/radars.csv ]; then
+        echo 'Downloading radars.csv...';
+        curl -o /data/radars/radars.csv https://raw.githubusercontent.com/tjturnage/cloud-radar-server/main/radars.csv;
+        echo 'Done!';
+      else
+        echo 'radars.csv already exists. Skipping download.';
+      fi"
+
   airflow-init:
     container_name: airflow-init
     build:
@@ -149,6 +163,7 @@ services:
       - MLFLOW_TRACKING_URI=http://mlflow_server:5000
     volumes:
       - ./api/app:/code/app
+      - ./data:/data
 
   evidently-ui:
     container_name: thornet-evidently
@@ -169,9 +184,11 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./data:/app/data
+      - .:/app
     environment:
-      - PREDICTIONS_CSV=/app/data/latest_predictions.csv
+      - PREDICTIONS_CSV=/app/data/dados_para_teste.csv
+      - STREAMLIT_SERVER_RUN_ON_SAVE=true
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
     depends_on:
       - mlflow
     restart: unless-stopped

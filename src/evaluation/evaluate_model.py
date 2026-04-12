@@ -256,7 +256,7 @@ def evaluate(cfg: DictConfig):
         logger.warning("No data found for evaluation.")
         return
 
-    # FIXED: Properly convert populated lists to arrays
+    # Properly convert populated lists to arrays
     y_true = np.array(y_true)
     y_scores = np.array(y_scores)
     y_pred = (y_scores > 0.5).astype(int)  # Create binary predictions from scores
