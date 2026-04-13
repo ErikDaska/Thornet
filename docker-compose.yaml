@@ -164,6 +164,7 @@ services:
     volumes:
       - ./api/app:/code/app
       - ./data:/data
+      - ./mlruns:/mlruns
 
   evidently-ui:
     container_name: thornet-evidently

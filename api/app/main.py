@@ -21,8 +21,8 @@ app = FastAPI(title="Thornet API", description="MaaS: Model-as-a-Service for PyT
 
 # State Initialization: Dynamically load the Production Model and its metadata
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
-MODEL_NAME = "Tornet-2DCNN"
-ALIAS = "Production"
+MODEL_NAME = "ThornetTornadoPrediction"
+ALIAS = "production"
 DATA_DIR = "/data/raw/tornet_2014"
 
 
@@ -47,7 +47,13 @@ try:
  MODEL_URI = f"models:/{MODEL_NAME}/{model_info.version}"
 
  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
- model = mlflow.pytorch.load_model(MODEL_URI).to(device)
+ print(f"Using device: {device}")
+ model = mlflow.pytorch.load_model(
+  MODEL_URI,
+  map_location=torch.device("cpu")
+ )
+
+ model = model.to(device)
  model.eval()
  logger.info(f"Loaded {MODEL_NAME} | Version: {model_info.version} on {device}")
 except Exception as e:
@@ -57,7 +63,7 @@ except Exception as e:
 # Load Radar Coordinates
 try:
     # Assuming radars.csv is inside your /data volume
-    RADAR_DF = pd.read_csv("/data/radars.csv", index_col="radar_id")
+    RADAR_DF = pd.read_csv("/data/radars/radars.csv", index_col="radar_id")
     logger.info("Successfully loaded radar coordinates database.")
 except Exception as e:
     logger.warning(f"Could not load radars.csv. Coordinates will be missing. Error: {e}")

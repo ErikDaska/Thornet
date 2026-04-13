@@ -1,6 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cu130
 fastapi[standard]==0.135.2
 mlflow==3.10.1
 torch==2.10.0
+torchvision==0.25.0
 numpy==2.4.3
 pandas==2.3.3
 xarray==2025.6.1
+netCDF4==1.7.4
+h5netcdf==1.8.1

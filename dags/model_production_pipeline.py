@@ -33,7 +33,7 @@ with DAG(
 
     # Run logic specifically for triggering the production script with hydra overrides
     run_logic_production = (
-        "cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/production/model_production.py "
+        "cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/model_production/model_production.py "
         "api.dataset.target_year={{ params.target_year }} "
         "tracking.uri='http://mlflow_server:5000' "
     )
