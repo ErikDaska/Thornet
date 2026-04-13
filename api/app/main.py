@@ -21,7 +21,7 @@ app = FastAPI(title="Thornet API", description="MaaS: Model-as-a-Service for PyT
 
 # State Initialization: Dynamically load the Production Model and its metadata
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
-MODEL_NAME = "ThornetTornadoPrediction"
+MODEL_NAME = "Tornet-2DCNN"
 ALIAS = "Production"
 DATA_DIR = "/data/raw/tornet_2014"
 
