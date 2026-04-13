@@ -15,6 +15,12 @@ import numpy as np
 import pandas as pd
 import torch
 
+import mlflow
+import mlflow.pytorch
+from torch.utils.data import DataLoader, Subset
+import sys
+from datasets.tornet_dataset import TornetDataset
+
 # --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +34,7 @@ EXPERIMENT_NAME     = os.getenv("MLFLOW_EXPERIMENT_NAME", "Airflow_Automated_Run
 OUTPUT_CSV          = Path(os.getenv("PREDICTIONS_OUTPUT", "/opt/airflow/data/dados_para_teste.csv"))
 PROCESSED_DATA_DIR  = Path(os.getenv("PROCESSED_DATA_DIR", "/opt/airflow/data/processed"))
 TARGET_YEAR         = int(os.getenv("TARGET_YEAR", "2013"))
-MAX_SAMPLES         = int(os.getenv("MAX_INFERENCE_SAMPLES", "50"))  # Limited for demo purposes
+MAX_SAMPLES         = int(os.getenv("MAX_INFERENCE_SAMPLES", "1000"))  
 ALERT_THRESHOLD_KM  = float(os.getenv("ALERT_THRESHOLD_KM", "200.0"))
 
 
@@ -40,17 +46,13 @@ def _run_model_inference() -> pd.DataFrame | None:
     Returns a DataFrame with predictions, or None on failure.
     """
     try:
-        import mlflow
-        import mlflow.pytorch
-        from torch.utils.data import DataLoader, Subset
-        import sys
         sys.path.insert(0, str(Path(__file__).parent.parent))
-        from datasets.tornet_dataset import TornetDataset
+
 
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         mlflow.set_registry_uri("sqlite:////mlflow/mlflow.db")
 
-        logger.info(f"🔍 Searching for the latest model in '{EXPERIMENT_NAME}'...")
+        logger.info(f"Searching for the latest model in '{EXPERIMENT_NAME}'...")
         runs = mlflow.search_runs(
             experiment_names=[EXPERIMENT_NAME],
             filter_string="tags.mlflow.runName LIKE '3dcnn_training_%'",
@@ -64,12 +66,12 @@ def _run_model_inference() -> pd.DataFrame | None:
 
         run_id   = runs.iloc[0].run_id
         model_uri = f"runs:/{run_id}/model"
-        logger.info(f"✅ Model found: run_id={run_id}")
+        logger.info(f"Model found: run_id={run_id}")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model  = mlflow.pytorch.load_model(model_uri, map_location=device)
         model.eval()
-        logger.info(f"📦 Model loaded on {device}.")
+        logger.info(f"Model loaded on {device}.")
 
         # Look for processed data
         data_dir = PROCESSED_DATA_DIR / str(TARGET_YEAR)
@@ -123,12 +125,12 @@ def _run_model_inference() -> pd.DataFrame | None:
                         "probability":      round(float(prob), 4),
                         "latitude":         lat,
                         "longitude":        lon,
-                        "alert_level":      _get_alert_level(float(prob), detected),
+                        "sensor":      _get_alert_level(float(prob), detected),
                         "source":           "model_inference",
                     })
                     sample_idx += 1
 
-        logger.info(f"✅ Inference complete: {len(records)} scans processed.")
+        logger.info(f"Inference complete: {len(records)} scans processed.")
         return pd.DataFrame(records)
 
     except Exception as e:
@@ -151,10 +153,10 @@ def main():
         # Save to CSV only if we have real predictions
         df.to_csv(OUTPUT_CSV, index=False)
         n_tornadoes = int(df["tornado_detected"].sum())
-        logger.info(f"💾 Real predictions saved to '{OUTPUT_CSV}'")
-        logger.info(f"📊 Total scans: {len(df)} | Tornadoes detected: {n_tornadoes}")
+        logger.info(f"Real predictions saved to '{OUTPUT_CSV}'")
+        logger.info(f"Total scans: {len(df)} | Tornadoes detected: {n_tornadoes}")
     else:
-        logger.error("🔴 No real model predictions available. Skipping CSV update.")
+        logger.error("No real model predictions available. Skipping CSV update.")
     logger.info("=" * 60)
 
 

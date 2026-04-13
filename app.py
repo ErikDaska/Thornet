@@ -18,6 +18,7 @@ import pandera as pa
 from pandera.typing import Series
 import httpx
 
+
 # Define the expected structure of our data
 PredictionSchema = pa.DataFrameSchema({
     "scan_id": pa.Column(str),
@@ -26,7 +27,6 @@ PredictionSchema = pa.DataFrameSchema({
     "longitude": pa.Column(float, checks=pa.Check.in_range(-180, 180)),
     "probability": pa.Column(float, checks=pa.Check.in_range(0, 1)),
     "tornado_detected": pa.Column(int, checks=pa.Check.isin([0, 1])),
-    "alert_level": pa.Column(str, checks=pa.Check.isin(["CRITICAL", "HIGH", "MODERATE", "NONE"])),
 })
 
 
@@ -59,13 +59,6 @@ ALERT_COLORS = {
     "MODERATE": "#eab308",
     "NONE":     "#6b7280",
 }
-ALERT_ICONS = {
-    "CRITICAL": "🔴",
-    "HIGH":     "🟠",
-    "MODERATE": "🟡",
-    "NONE":     "🟢",
-}
-
 
 # HELPER FUNCTIONS
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -169,32 +162,32 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
             lon  = float(row["longitude"])
             prob = float(row.get("probability", 0.5))
             dist = float(row.get("distance_km", 0))
-            lvl  = str(row.get("alert_level", "MODERATE"))
+            ses  = str(row.get("sensor", "NONE"))
             sid  = str(row.get("scan_id", "?"))
 
-            color = ("red" if lvl == "CRITICAL" else
-                     "orange" if lvl == "HIGH" else "beige")
+            color = ("red" if ses == "CRITICAL" else
+                     "orange" if ses == "HIGH" else "beige")
 
             # Intensity circle
             folium.CircleMarker(
                 location=[lat, lon],
                 radius=12 + prob * 10,
-                color=ALERT_COLORS.get(lvl, "#ef4444"),
+                color=ALERT_COLORS.get(ses, "#ef4444"),
                 weight=2,
                 fill=True,
-                fill_color=ALERT_COLORS.get(lvl, "#ef4444"),
+                fill_color=ALERT_COLORS.get(ses, "#ef4444"),
                 fill_opacity=0.35,
             ).add_to(m)
-
+            
             folium.Marker(
                 location=[lat, lon],
-                tooltip=f"🌪️ {lvl} | {dist:.0f} km | p={prob:.2f}",
+                tooltip=f"🌪️ {ses} | {dist:.0f} km | p={prob:.2f}",
                 popup=folium.Popup(
                     f"""<div style='font-family:sans-serif;font-size:13px'>
                     <b>🌪️ Tornado Detected</b><br>
                     <b>Scan ID:</b> {sid}<br>
                     <b>Probability:</b> {prob:.1%}<br>
-                    <b>Level:</b> {ALERT_ICONS.get(lvl,'')} {lvl}<br>
+                    <b>Sensor:</b> {ses}<br>
                     <b>Distance:</b> {dist:.1f} km<br>
                     <b>Coords:</b> {lat:.4f}, {lon:.4f}
                     </div>""",
@@ -259,6 +252,23 @@ with st.sidebar:
         key="threshold_slider"
     )
 
+    st.markdown('<p class="section-header">Day Month and Year</p>', unsafe_allow_html=True)
+
+    date_input = st.date_input(
+        "Select Date",
+        value=datetime(2014, 1, 1).date(),
+        key="date_input"
+    )
+
+    st.markdown('<p class="section-header">Time of the Day</p>', unsafe_allow_html=True)
+
+    slider_time = st.slider(
+        "Select Time",
+        value=datetime.now().time(),
+        key="time_slider"
+    )
+
+
     show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
 
     st.divider()
@@ -301,12 +311,12 @@ if not df.empty:
     df_in_range   = df_tornados[df_tornados["distance_km"] <= threshold_km]
     closest_dist  = df_in_range["distance_km"].min() if not df_in_range.empty else None
     max_prob      = df_tornados["probability"].max() if not df_tornados.empty else 0.0
-    worst_level   = df_in_range["alert_level"].iloc[0] if not df_in_range.empty else "NONE"
+    sensor   = df_in_range["sensor"].iloc[0] if not df_in_range.empty else "NONE"
 else:
     df_tornados = df_in_range = pd.DataFrame()
     closest_dist = None
     max_prob = 0.0
-    worst_level = "NONE"
+    sensor = "NONE"
 
 is_alert = not df_in_range.empty
 
@@ -340,13 +350,13 @@ else:
     if is_alert:
         min_dist_str  = f"{closest_dist:.1f} km" if closest_dist is not None else "?"
         alert_count   = len(df_in_range)
-        icon_alert    = ALERT_ICONS.get(worst_level, "🔴")
+        icon_alert    = ALERT_ICONS.get(Sensor, "🔴")
         st.markdown(
             f'<div class="status-danger">'
             f'<p class="status-text-danger">{icon_alert} TORNADO ALERT!</p>'
             f'<p class="status-sub">Tornado detected within <strong>{min_dist_str}</strong> from your location &nbsp;·&nbsp; '
             f'{alert_count} tornado{"es" if alert_count > 1 else ""} detected within {threshold_km} km &nbsp;·&nbsp; '
-            f'Level: <strong>{worst_level}</strong></p>'
+            f'Sensor: <strong>{Sensor}</strong></p>'
             f'</div>',
             unsafe_allow_html=True
         )
@@ -364,7 +374,7 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("📡 Total Scans",   f"{len(df):,}")
     with col2:
@@ -373,8 +383,6 @@ else:
         pct = len(df_tornados) / len(df) * 100 if len(df) > 0 else 0
         st.metric("📊 Positive Rate",    f"{pct:.1f}%")
     with col4:
-        st.metric("📉 Max Prob.",     f"{max_prob:.1%}")
-    with col5:
         st.metric("⚠️ On Alert",        f"{len(df_in_range):,}",
                   delta=f"within {threshold_km} km")
 
@@ -402,7 +410,7 @@ else:
                 unsafe_allow_html=True
             )
         else:
-            display_cols = ["scan_id", "distance_km", "probability", "alert_level", "latitude", "longitude"]
+            display_cols = ["scan_id", "distance_km", "probability", "sensor", "latitude", "longitude"]
             display_cols = [c for c in display_cols if c in df_in_range.columns]
             df_display = df_in_range[display_cols].copy()
 
@@ -415,7 +423,7 @@ else:
                 df_display["latitude"]  = df_display["latitude"].apply(lambda x: f"{x:.4f}°")
                 df_display["longitude"] = df_display["longitude"].apply(lambda x: f"{x:.4f}°")
 
-            df_display.columns = ["Scan ID", "Distance", "Prob.", "Level", "Lat", "Lon"]
+            df_display.columns = ["Scan ID", "Distance", "Prob.", "Sensor", "Lat", "Lon"]
             st.dataframe(df_display, use_container_width=True, hide_index=True,
                          height=min(300, 36 + 35 * len(df_display)))
 
@@ -424,12 +432,9 @@ else:
 
         if not df_tornados.empty:
             top10 = df_tornados.nsmallest(10, "distance_km")[
-                ["scan_id", "distance_km", "probability", "alert_level"]
+                ["scan_id", "distance_km", "probability", "sensor"]
             ].copy()
-            top10["alert_level"] = top10["alert_level"].apply(
-                lambda lvl: f"{ALERT_ICONS.get(lvl,'')} {lvl}"
-            )
-            top10.columns = ["Scan ID", "Dist. (km)", "Prob.", "Level"]
+            top10.columns = ["Scan ID", "Dist. (km)", "Prob.", "Sensor"]
             top10["Prob."] = top10["Prob."].apply(lambda x: f"{x:.1%}")
             top10["Dist. (km)"] = top10["Dist. (km)"].apply(lambda x: f"{x:.1f}")
             st.dataframe(top10, use_container_width=True, hide_index=True, height=360)
@@ -441,7 +446,7 @@ else:
         if not df.empty:
             df_show = df.copy()
             show_cols = ["scan_id", "timestamp", "tornado_detected",
-                         "probability", "distance_km", "alert_level",
+                         "probability", "distance_km", "sensor",
                          "latitude", "longitude"]
             show_cols = [c for c in show_cols if c in df_show.columns]
             st.dataframe(
