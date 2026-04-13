@@ -39,7 +39,7 @@ def model_production(cfg: DictConfig):
     # 2. Find all registered models
     registered_models = client.search_registered_models(filter_string="name ILIKE 'Tornet-%'")
     if not registered_models:
-        logger.error("No registered models found in MLflow. Skipping Thunderdome.")
+        logger.error("No registered models found in MLflow. Skipping Model Production.")
         return
 
     best_global_ap = 0.0
@@ -110,7 +110,7 @@ def model_production(cfg: DictConfig):
             tags={
                 "Winning_Architecture": best_model_name,
                 "Original_Version": best_model_version,
-                "Thunderdome_AP": f"{best_global_ap:.4f}"
+                "Model_AP": f"{best_global_ap:.4f}"
             }
         )
         
