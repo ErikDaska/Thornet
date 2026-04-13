@@ -18,8 +18,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 @hydra.main(version_base="1.3", config_path="../../conf", config_name="config")
-def thunderdome(cfg: DictConfig):
-    logger.info("🌩️ Welcome to the Thunderdome! 🌩️")
+def model_production(cfg: DictConfig):
+    logger.info("Selection of best model for production")
     
     mlflow.set_tracking_uri(cfg.tracking.uri)
     client = MlflowClient()
@@ -39,12 +39,13 @@ def thunderdome(cfg: DictConfig):
     # 2. Find all registered models
     registered_models = client.search_registered_models(filter_string="name ILIKE 'Tornet-%'")
     if not registered_models:
-        logger.error("No registered models found in MLflow. Skipping Thunderdome.")
+        logger.error("No registered models found in MLflow. Skipping Model Production.")
         return
 
     best_global_ap = 0.0
     best_model_name = None
     best_model_version = None
+    best_run_id = None  # NEW: Track the run_id so we can grab the artifact later
 
     # 3. The Gauntlet (Sequential testing to avoid OOM)
     for rm in registered_models:
@@ -79,6 +80,7 @@ def thunderdome(cfg: DictConfig):
                 best_global_ap = fresh_ap
                 best_model_name = rm.name
                 best_model_version = latest_version.version
+                best_run_id = latest_version.run_id  # NEW: Save the underlying run_id
 
         except Exception as e:
             logger.error(f"Failed to evaluate {rm.name}: {e}")
@@ -90,17 +92,36 @@ def thunderdome(cfg: DictConfig):
                 torch.cuda.empty_cache()
             gc.collect()
 
-    # 4. Crown the Global Champion
+    # 4. Crown the Global Champion & Promote to Unified Registry
     if best_model_name:
-        logger.info(f"🏆 GLOBAL CHAMPION: {best_model_name} (Version {best_model_version}) with AP: {best_global_ap:.4f}")
+        logger.info(f"GLOBAL CHAMPION: {best_model_name} (Version {best_model_version}) with AP: {best_global_ap:.4f}")
         
-        # Apply the @production alias to the absolute winner
-        client.set_registered_model_alias(
-            name=best_model_name,
-            alias="production",
-            version=best_model_version
+        unified_model_name = "ThornetTornadoPrediction"
+        
+        # We use the run_id from the champion to point back to the original logged artifact
+        model_uri = f"runs:/{best_run_id}/model"
+        
+        logger.info(f"Registering champion artifact under unified name: '{unified_model_name}'...")
+        
+        # Register it to the new, unified model name
+        registered_model = mlflow.register_model(
+            model_uri=model_uri,
+            name=unified_model_name,
+            tags={
+                "Winning_Architecture": best_model_name,
+                "Original_Version": best_model_version,
+                "Model_AP": f"{best_global_ap:.4f}"
+            }
         )
-        logger.info("The @production alias has been updated! Downstream APIs will now serve this model.")
+        
+        # Apply the @production alias to the NEW unified registered model
+        client.set_registered_model_alias(
+            name=unified_model_name,
+            alias="production",
+            version=registered_model.version
+        )
+        
+        logger.info(f"Success! '{unified_model_name}' (Version {registered_model.version}) promoted to @production.")
 
 if __name__ == "__main__":
-    thunderdome()
+    model_production()
