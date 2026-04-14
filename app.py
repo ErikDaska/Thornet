@@ -60,6 +60,7 @@ ALERT_COLORS = {
     "NONE":     "#6b7280",
 }
 
+
 # HELPER FUNCTIONS
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Distance in km between two points using the Haversine formula."""
@@ -112,7 +113,7 @@ def enrich_with_distance(df: pd.DataFrame, user_lat: float, user_lon: float) -> 
 
 def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
               threshold_km: float, active_only: bool) -> folium.Map:
-    """Builds the Folium map with user and tornado markers."""
+    """Builds the Folium map with user, tornado markers, and normal scans."""
     m = folium.Map(
         location=[user_lat, user_lon],
         zoom_start=5,
@@ -151,12 +152,39 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
         icon=folium.Icon(color="blue", icon="home", prefix="fa"),
     ).add_to(m)
 
-    # Tornado markers
+    # Markers (Tornados & Normal Scans)
     if not df.empty:
-        tornados = df[df["tornado_detected"] == 1] if active_only else df
-        # Re-verify detection to ensure only relevant icons show if toggle is set
-        tornados = tornados[tornados["tornado_detected"] == 1]
+        # 1. Isolar os tornados reais
+        tornados = df[df["tornado_detected"] == 1]
+        sensores_com_tornado = tornados["sensor"].unique()
 
+        # 2. Desenhar scans normais APENAS se "active_only" for False
+        # E garantindo que não desenhamos por cima de um sensor que já tem tornado
+        if not active_only:
+            scans_normais = df[
+                (df["tornado_detected"] == 0) & 
+                (~df["sensor"].isin(sensores_com_tornado))
+            ]
+
+            for _, row in scans_normais.iterrows():
+                lat = float(row["latitude"])
+                lon = float(row["longitude"])
+                ses = str(row.get("sensor", "NONE"))
+
+                # Círculo azul pequeno para scans sem alerta
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=5,  # Mais pequeno que o tornado para não distrair
+                    color="#3b82f6", # Azul Folium/Tailwind
+                    weight=1,
+                    fill=True,
+                    fill_color="#3b82f6",
+                    fill_opacity=0.4,
+                    tooltip=f"ℹ️ Clear Scan | Sensor: {ses}"
+                ).add_to(m)
+
+
+        # 3. Desenhar os Tornados (Sempre visíveis se existirem)
         for _, row in tornados.iterrows():
             lat  = float(row["latitude"])
             lon  = float(row["longitude"])
@@ -168,7 +196,7 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
             color = ("red" if ses == "CRITICAL" else
                      "orange" if ses == "HIGH" else "beige")
 
-            # Intensity circle
+            # Círculo vermelho/laranja de impacto
             folium.CircleMarker(
                 location=[lat, lon],
                 radius=12 + prob * 10,
@@ -179,6 +207,7 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
                 fill_opacity=0.35,
             ).add_to(m)
             
+            # Ícone central de alerta
             folium.Marker(
                 location=[lat, lon],
                 tooltip=f"🌪️ {ses} | {dist:.0f} km | p={prob:.2f}",
@@ -199,6 +228,13 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
     folium.LayerControl().add_to(m)
     return m
 
+# LOAD DATA
+df_raw = load_predictions(str(PREDICTIONS_PATH))
+
+df_raw["timestamp_dt"] = pd.to_datetime(df_raw["timestamp"])
+
+
+timestamp_prod = df_raw["timestamp_dt"].dt.strftime("%d - %m - %Y").unique().tolist()
 
 # SIDEBAR
 with st.sidebar:
@@ -252,22 +288,13 @@ with st.sidebar:
         key="threshold_slider"
     )
 
-    st.markdown('<p class="section-header">Day Month and Year</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header"> TimeStamp with Data</p>', unsafe_allow_html=True)
 
-    date_input = st.date_input(
-        "Select Date",
-        value=datetime(2014, 1, 1).date(),
-        key="date_input"
+    timestamp = st.selectbox(
+        "Select Timestamp",
+        options=timestamp_prod,
+        key="timestamp_select"
     )
-
-    st.markdown('<p class="section-header">Time of the Day</p>', unsafe_allow_html=True)
-
-    slider_time = st.slider(
-        "Select Time",
-        value=datetime.now().time(),
-        key="time_slider"
-    )
-
 
     show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
 
@@ -300,10 +327,16 @@ with st.sidebar:
         st.markdown('<span style="color:#ef4444; font-weight:700">○ OFFLINE</span>', unsafe_allow_html=True)
         st.caption("Using CSV fallback.")
 
+df_raw_distances = enrich_with_distance(df_raw, user_lat, user_lon) if not df_raw.empty else pd.DataFrame()
 
-# LOAD DATA
-df_raw = load_predictions(str(PREDICTIONS_PATH))
-df = enrich_with_distance(df_raw, user_lat, user_lon) if not df_raw.empty else pd.DataFrame()
+#Just show tornados from timestamps choiced by the user
+
+df_raw_distances["timestamp_dt"] = pd.to_datetime(df_raw_distances["timestamp"])
+
+
+df = df_raw_distances[
+    df_raw_distances["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp
+]
 
 # Active tornadoes within radius
 if not df.empty:
@@ -319,7 +352,6 @@ else:
     sensor = "NONE"
 
 is_alert = not df_in_range.empty
-
 
 # HEADER
 st.markdown("# 🌪️ TorNet Tornado Alert Dashboard")
@@ -349,14 +381,12 @@ if df.empty:
 else:
     if is_alert:
         min_dist_str  = f"{closest_dist:.1f} km" if closest_dist is not None else "?"
-        alert_count   = len(df_in_range)
-        icon_alert    = ALERT_ICONS.get(Sensor, "🔴")
+        alert_count   = len(df_in_range["sensor"].unique())
         st.markdown(
             f'<div class="status-danger">'
-            f'<p class="status-text-danger">{icon_alert} TORNADO ALERT!</p>'
+            f'<p class="status-text-danger">TORNADO ALERT!</p>'
             f'<p class="status-sub">Tornado detected within <strong>{min_dist_str}</strong> from your location &nbsp;·&nbsp; '
-            f'{alert_count} tornado{"es" if alert_count > 1 else ""} detected within {threshold_km} km &nbsp;·&nbsp; '
-            f'Sensor: <strong>{Sensor}</strong></p>'
+            f'{alert_count} tornado{"es" if alert_count > 1 else ""} detected; '
             f'</div>',
             unsafe_allow_html=True
         )
@@ -376,11 +406,11 @@ else:
     # Metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("📡 Total Scans",   f"{len(df):,}")
+        st.metric("📡 Total Scans",   f"{len(df["sensor"].unique()):,}")
     with col2:
-        st.metric("🌪️ Tornadoes Detected", f"{len(df_tornados):,}")
+        st.metric("🌪️ Tornadoes Detected", f"{len(df_tornados["sensor"].unique()):,}")
     with col3:
-        pct = len(df_tornados) / len(df) * 100 if len(df) > 0 else 0
+        pct = len(df_tornados["sensor"].unique()) / len(df["sensor"].unique()) * 100 if len(df) > 0 else 0
         st.metric("📊 Positive Rate",    f"{pct:.1f}%")
     with col4:
         st.metric("⚠️ On Alert",        f"{len(df_in_range):,}",
@@ -429,9 +459,9 @@ else:
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<p class="section-header">📍 Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
-
-        if not df_tornados.empty:
-            top10 = df_tornados.nsmallest(10, "distance_km")[
+        df_tornados_sensor = df_tornados.groupby("sensor").first().reset_index()
+        if not df_tornados_sensor.empty:
+            top10 = df_tornados_sensor.nsmallest(10, "distance_km")[
                 ["scan_id", "distance_km", "probability", "sensor"]
             ].copy()
             top10.columns = ["Scan ID", "Dist. (km)", "Prob.", "Sensor"]
