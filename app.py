@@ -391,7 +391,7 @@ else:
             unsafe_allow_html=True
         )
     else:
-        n_tornados_total = len(df_tornados)
+        n_tornados_total = len(df_tornados["sensor"].unique())
         st.markdown(
             f'<div class="status-safe">'
             f'<p class="status-text-safe">✅ SAFE ZONE</p>'
