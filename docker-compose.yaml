@@ -165,6 +165,13 @@ services:
       - ./api/app:/code/app
       - ./data:/data
       - ./mlruns:/mlruns
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   evidently-ui:
     container_name: thornet-evidently
@@ -187,7 +194,7 @@ services:
     volumes:
       - .:/app
     environment:
-      - PREDICTIONS_CSV=/app/data/dados_para_teste.csv
+      - PREDICTIONS_CSV=/app/data/offline_data_fallback.csv
       - STREAMLIT_SERVER_RUN_ON_SAVE=true
       - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
     depends_on:

@@ -18,6 +18,7 @@ import pandera as pa
 from pandera.typing import Series
 import httpx
 
+
 # Define the expected structure of our data
 PredictionSchema = pa.DataFrameSchema({
     "scan_id": pa.Column(str),
@@ -26,7 +27,7 @@ PredictionSchema = pa.DataFrameSchema({
     "longitude": pa.Column(float, checks=pa.Check.in_range(-180, 180)),
     "probability": pa.Column(float, checks=pa.Check.in_range(0, 1)),
     "tornado_detected": pa.Column(int, checks=pa.Check.isin([0, 1])),
-    "alert_level": pa.Column(str, checks=pa.Check.isin(["CRITICAL", "HIGH", "MODERATE", "NONE"])),
+    "sensor": pa.Column(str),
 })
 
 
@@ -49,7 +50,7 @@ load_css("css/style.css")
 
 
 # CONSTANTS
-PREDICTIONS_PATH = Path(os.getenv("PREDICTIONS_CSV", "/app/data/dados_para_teste.csv")) 
+PREDICTIONS_PATH = Path(os.getenv("PREDICTIONS_CSV", "/app/data/offline_data_fallback.csv")) 
 API_URL = os.getenv("API_URL", "http://fastapi-service:80")
 REFRESH_INTERVAL_SECONDS = 30
 
@@ -58,12 +59,6 @@ ALERT_COLORS = {
     "HIGH":     "#fb923c",
     "MODERATE": "#eab308",
     "NONE":     "#6b7280",
-}
-ALERT_ICONS = {
-    "CRITICAL": "🔴",
-    "HIGH":     "🟠",
-    "MODERATE": "🟡",
-    "NONE":     "🟢",
 }
 
 
@@ -79,7 +74,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 @st.cache_data(ttl=REFRESH_INTERVAL_SECONDS)
-def load_predictions(path: str) -> pd.DataFrame:
+def load_predictions_csv(path: str) -> pd.DataFrame:
     """Loads and validates the predictions CSV."""
     p = Path(path)
     if not p.exists():
@@ -87,22 +82,49 @@ def load_predictions(path: str) -> pd.DataFrame:
     
     try:
         df = pd.read_csv(p)
-        
-        # 1. Basic cleaning
         df.columns = [c.lower().strip() for c in df.columns]
-        
-        # 2. Strict Validation with Pandera
-        validated_df = PredictionSchema.validate(df)
-        
-        return validated_df
-
-    except pa.errors.SchemaError as ve:
-        st.error(f"Data Validation Error: The inference output format has changed.")
-        st.sidebar.error(f"Validation Detail: {ve}")
-        return pd.DataFrame()
+        return PredictionSchema.validate(df)
     except Exception as e:
-        st.error(f"Unexpected error loading data: {e}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=600)
+def fetch_api_inventory() -> list:
+    """Fetches list of available dates from the API."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{API_URL}/api/v1/inventory")
+            if resp.status_code == 200:
+                return resp.json().get("dates", [])
+    except Exception:
+        pass
+    return []
+
+@st.cache_data(ttl=3600)
+def fetch_api_forecast(target_date_iso: str) -> pd.DataFrame:
+    """Fetches forecast for a specific date from the API."""
+    try:
+        # Note: st.spinner is handled in the main loop to avoid cache issues
+        with httpx.Client(timeout=300.0) as client:
+            resp = client.post(f"{API_URL}/api/v1/forecast", json={"date_": target_date_iso})
+            if resp.status_code == 200:
+                data = resp.json()
+                predictions = data.get("predictions", [])
+                if not predictions:
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame(predictions)
+                # Schema Adaptation
+                df["probability"] = df["tornado_probability"]
+                df["latitude"] = df["lat"]
+                df["longitude"] = df["lon"]
+                df["tornado_detected"] = (df["probability"] > 0.5).astype(int)
+                df["scan_id"] = [f"api_{i:04d}" for i in range(len(df))]
+                # Sensor is already in the API response now
+                
+                return PredictionSchema.validate(df)
+    except Exception as e:
+        st.sidebar.warning(f"API Fetch Error: {e}")
+    return pd.DataFrame()
 
 
 def enrich_with_distance(df: pd.DataFrame, user_lat: float, user_lon: float) -> pd.DataFrame:
@@ -119,7 +141,7 @@ def enrich_with_distance(df: pd.DataFrame, user_lat: float, user_lon: float) -> 
 
 def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
               threshold_km: float, active_only: bool) -> folium.Map:
-    """Builds the Folium map with user and tornado markers."""
+    """Builds the Folium map with user, tornado markers, and normal scans."""
     m = folium.Map(
         location=[user_lat, user_lon],
         zoom_start=5,
@@ -158,43 +180,71 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
         icon=folium.Icon(color="blue", icon="home", prefix="fa"),
     ).add_to(m)
 
-    # Tornado markers
+    # Markers (Tornados & Normal Scans)
     if not df.empty:
-        tornados = df[df["tornado_detected"] == 1] if active_only else df
-        # Re-verify detection to ensure only relevant icons show if toggle is set
-        tornados = tornados[tornados["tornado_detected"] == 1]
+        # 1. Isolar os tornados reais
+        tornados = df[df["tornado_detected"] == 1]
+        sensores_com_tornado = tornados["sensor"].unique()
 
+        # 2. Desenhar scans normais APENAS se "active_only" for False
+        # E garantindo que não desenhamos por cima de um sensor que já tem tornado
+        if not active_only:
+            scans_normais = df[
+                (df["tornado_detected"] == 0) & 
+                (~df["sensor"].isin(sensores_com_tornado))
+            ]
+
+            for _, row in scans_normais.iterrows():
+                lat = float(row["latitude"])
+                lon = float(row["longitude"])
+                ses = str(row.get("sensor", "NONE"))
+
+                # Círculo azul pequeno para scans sem alerta
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=5,  # Mais pequeno que o tornado para não distrair
+                    color="#3b82f6", # Azul Folium/Tailwind
+                    weight=1,
+                    fill=True,
+                    fill_color="#3b82f6",
+                    fill_opacity=0.4,
+                    tooltip=f"ℹ️ Clear Scan | Sensor: {ses}"
+                ).add_to(m)
+
+
+        # 3. Desenhar os Tornados (Sempre visíveis se existirem)
         for _, row in tornados.iterrows():
             lat  = float(row["latitude"])
             lon  = float(row["longitude"])
             prob = float(row.get("probability", 0.5))
             dist = float(row.get("distance_km", 0))
-            lvl  = str(row.get("alert_level", "MODERATE"))
+            ses  = str(row.get("sensor", "NONE"))
             sid  = str(row.get("scan_id", "?"))
 
-            color = ("red" if lvl == "CRITICAL" else
-                     "orange" if lvl == "HIGH" else "beige")
+            color = ("red" if ses == "CRITICAL" else
+                     "orange" if ses == "HIGH" else "beige")
 
-            # Intensity circle
+            # Círculo vermelho/laranja de impacto
             folium.CircleMarker(
                 location=[lat, lon],
                 radius=12 + prob * 10,
-                color=ALERT_COLORS.get(lvl, "#ef4444"),
+                color=ALERT_COLORS.get(ses, "#ef4444"),
                 weight=2,
                 fill=True,
-                fill_color=ALERT_COLORS.get(lvl, "#ef4444"),
+                fill_color=ALERT_COLORS.get(ses, "#ef4444"),
                 fill_opacity=0.35,
             ).add_to(m)
-
+            
+            # Ícone central de alerta
             folium.Marker(
                 location=[lat, lon],
-                tooltip=f"🌪️ {lvl} | {dist:.0f} km | p={prob:.2f}",
+                tooltip=f"🌪️ {ses} | {dist:.0f} km | p={prob:.2f}",
                 popup=folium.Popup(
                     f"""<div style='font-family:sans-serif;font-size:13px'>
                     <b>🌪️ Tornado Detected</b><br>
                     <b>Scan ID:</b> {sid}<br>
                     <b>Probability:</b> {prob:.1%}<br>
-                    <b>Level:</b> {ALERT_ICONS.get(lvl,'')} {lvl}<br>
+                    <b>Sensor:</b> {ses}<br>
                     <b>Distance:</b> {dist:.1f} km<br>
                     <b>Coords:</b> {lat:.4f}, {lon:.4f}
                     </div>""",
@@ -206,6 +256,40 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
     folium.LayerControl().add_to(m)
     return m
 
+# --- DATA SOURCE INITIALIZATION ---
+api_online = False
+api_dates = []
+api_metadata = {}
+try:
+    with httpx.Client(timeout=3.0) as client:
+        resp = client.get(f"{API_URL}/health")
+        if resp.status_code == 200:
+            api_online = True
+            api_metadata = resp.json()
+    if api_online:
+        api_dates = fetch_api_inventory()
+except Exception:
+    api_online = False
+
+# Load Fallback CSV
+df_csv = load_predictions_csv(str(PREDICTIONS_PATH))
+csv_dates = []
+if not df_csv.empty:
+    df_csv["timestamp_dt"] = pd.to_datetime(df_csv["timestamp"])
+    csv_dates = df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y").unique().tolist()
+
+# Normalize API dates to friendly format for the UI
+api_dates_friendly = []
+for d in api_dates:
+    try:
+        api_dates_friendly.append(datetime.strptime(d, "%Y-%m-%d").strftime("%d - %m - %Y"))
+    except:
+        pass
+
+# Consolidate all available dates for the selector
+timestamp_prod = sorted(list(set(api_dates_friendly + csv_dates)), reverse=True)
+if not timestamp_prod:
+    timestamp_prod = ["No Data Available"]
 
 # SIDEBAR
 with st.sidebar:
@@ -259,11 +343,37 @@ with st.sidebar:
         key="threshold_slider"
     )
 
-    show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
+    st.markdown('<p class="section-header">📅 Schedule & Source</p>', unsafe_allow_html=True)
+
+    # Initialize session state for source selection to avoid NameErrors
+    if "data_source_select" not in st.session_state:
+        st.session_state["data_source_select"] = "Live API (Real-time)" if api_online else "Local CSV (Offline Fallback)"
+
+    # Filter available timestamps based on CURRENT source in session state
+    current_source_val = st.session_state["data_source_select"]
+    if current_source_val == "Live API (Real-time)":
+        ts_options = api_dates_friendly if api_dates_friendly else ["No API Data Available"]
+    else:
+        ts_options = csv_dates if csv_dates else ["No CSV Data Available"]
+
+    timestamp = st.selectbox(
+        "Select Timestamp",
+        options=ts_options,
+        key="timestamp_select"
+    )
+
+    data_source = st.radio(
+        "Data Source Mode",
+        options=["Live API (Real-time)", "Local CSV (Offline Fallback)"],
+        help="Choose between real-time model inference or cached offline data.",
+        key="data_source_select"
+    )
 
     st.divider()
-    st.markdown('<p class="section-header">🔄 Data</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">🔄 Control Panel</p>', unsafe_allow_html=True)
 
+    show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
+    
     auto_refresh = st.toggle(f"Auto‑refresh ({REFRESH_INTERVAL_SECONDS}s)", value=True, key="auto_refresh")
     if st.button("🔄 Refresh Now", use_container_width=True, key="refresh_btn"):
         st.cache_data.clear()
@@ -271,29 +381,53 @@ with st.sidebar:
 
     st.caption(f"📂 `{PREDICTIONS_PATH}`")
 
-    # API STATUS INDICATOR (Moved to bottom)
-    st.markdown("<br><br>", unsafe_allow_html=True) # Spacer
-    st.divider()
-    st.markdown('<p class="section-header" style="font-size:0.75rem">🔌 Backend Status</p>', unsafe_allow_html=True)
-    
-    api_online = False
-    try:
-        with httpx.Client(timeout=1.0) as client:
-            resp = client.get(f"{API_URL}/")
-            api_online = resp.status_code == 200
-    except Exception:
-        api_online = False
-
     if api_online:
-        st.markdown('<span style="color:#10b981; font-weight:700">● ONLINE</span>', unsafe_allow_html=True)
+        mn = api_metadata.get("model", "Model")
+        mv = api_metadata.get("version", "unknown")
+        dv = api_metadata.get("device", "cpu")
+        st.markdown(f'<span style="color:#10b981; font-weight:700">● ONLINE | {mn} v{mv} ({dv.upper()})</span>', unsafe_allow_html=True)
     else:
         st.markdown('<span style="color:#ef4444; font-weight:700">○ OFFLINE</span>', unsafe_allow_html=True)
         st.caption("Using CSV fallback.")
 
+# --- DATA SELECTION LOGIC ---
+df = pd.DataFrame()
+if timestamp and timestamp != "No Data Available":
+    try:
+        target_iso = datetime.strptime(timestamp, "%d - %m - %Y").strftime("%Y-%m-%d")
+        
+        # Choice 1: Live API
+        if data_source == "Live API (Real-time)":
+            if api_online and target_iso in api_dates:
+                with st.spinner(f"Running Deep Learning Inference for {target_iso}... (First time may take a few minutes)"):
+                    df = fetch_api_forecast(target_iso)
+                
+                # RELIABILITY-FIRST: Automatic failover if API fails
+                if df.empty and not df_csv.empty:
+                    st.warning("API fetch failed or timed out. Automatically falling back to local CSV records.")
+                    df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
+            else:
+                if not api_online:
+                    st.error("API Backend is currently OFFLINE. Automatically attempting to load from Local CSV...")
+                else:
+                    st.warning(f"No API data for {target_iso}. Attempting CSV fallback...")
+                
+                if not df_csv.empty:
+                    df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
+            
+        # Choice 2: Local CSV
+        else:
+            if not df_csv.empty:
+                df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
+            else:
+                st.error("Fallback CSV not found. Please trigger the Airflow pipeline.")
 
-# LOAD DATA
-df_raw = load_predictions(str(PREDICTIONS_PATH))
-df = enrich_with_distance(df_raw, user_lat, user_lon) if not df_raw.empty else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading data for {timestamp}: {e}")
+
+# Enrich the selected data with distances
+if not df.empty:
+    df = enrich_with_distance(df, user_lat, user_lon)
 
 # Active tornadoes within radius
 if not df.empty:
@@ -301,15 +435,14 @@ if not df.empty:
     df_in_range   = df_tornados[df_tornados["distance_km"] <= threshold_km]
     closest_dist  = df_in_range["distance_km"].min() if not df_in_range.empty else None
     max_prob      = df_tornados["probability"].max() if not df_tornados.empty else 0.0
-    worst_level   = df_in_range["alert_level"].iloc[0] if not df_in_range.empty else "NONE"
+    sensor   = df_in_range["sensor"].iloc[0] if not df_in_range.empty else "NONE"
 else:
     df_tornados = df_in_range = pd.DataFrame()
     closest_dist = None
     max_prob = 0.0
-    worst_level = "NONE"
+    sensor = "NONE"
 
 is_alert = not df_in_range.empty
-
 
 # HEADER
 st.markdown("# 🌪️ TorNet Tornado Alert Dashboard")
@@ -339,19 +472,17 @@ if df.empty:
 else:
     if is_alert:
         min_dist_str  = f"{closest_dist:.1f} km" if closest_dist is not None else "?"
-        alert_count   = len(df_in_range)
-        icon_alert    = ALERT_ICONS.get(worst_level, "🔴")
+        alert_count   = len(df_in_range["sensor"].unique())
         st.markdown(
             f'<div class="status-danger">'
-            f'<p class="status-text-danger">{icon_alert} TORNADO ALERT!</p>'
+            f'<p class="status-text-danger">TORNADO ALERT!</p>'
             f'<p class="status-sub">Tornado detected within <strong>{min_dist_str}</strong> from your location &nbsp;·&nbsp; '
-            f'{alert_count} tornado{"es" if alert_count > 1 else ""} detected within {threshold_km} km &nbsp;·&nbsp; '
-            f'Level: <strong>{worst_level}</strong></p>'
+            f'{alert_count} tornado{"es" if alert_count > 1 else ""} detected; '
             f'</div>',
             unsafe_allow_html=True
         )
     else:
-        n_tornados_total = len(df_tornados)
+        n_tornados_total = len(df_tornados["sensor"].unique())
         st.markdown(
             f'<div class="status-safe">'
             f'<p class="status-text-safe">✅ SAFE ZONE</p>'
@@ -364,17 +495,15 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("📡 Total Scans",   f"{len(df):,}")
+        st.metric("📡 Total Scans",   f"{len(df["sensor"].unique()):,}")
     with col2:
-        st.metric("🌪️ Tornadoes Detected", f"{len(df_tornados):,}")
+        st.metric("🌪️ Tornadoes Detected", f"{len(df_tornados["sensor"].unique()):,}")
     with col3:
-        pct = len(df_tornados) / len(df) * 100 if len(df) > 0 else 0
+        pct = len(df_tornados["sensor"].unique()) / len(df["sensor"].unique()) * 100 if len(df) > 0 else 0
         st.metric("📊 Positive Rate",    f"{pct:.1f}%")
     with col4:
-        st.metric("📉 Max Prob.",     f"{max_prob:.1%}")
-    with col5:
         st.metric("⚠️ On Alert",        f"{len(df_in_range):,}",
                   delta=f"within {threshold_km} km")
 
@@ -402,7 +531,7 @@ else:
                 unsafe_allow_html=True
             )
         else:
-            display_cols = ["scan_id", "distance_km", "probability", "alert_level", "latitude", "longitude"]
+            display_cols = ["scan_id", "distance_km", "probability", "sensor", "latitude", "longitude"]
             display_cols = [c for c in display_cols if c in df_in_range.columns]
             df_display = df_in_range[display_cols].copy()
 
@@ -415,21 +544,18 @@ else:
                 df_display["latitude"]  = df_display["latitude"].apply(lambda x: f"{x:.4f}°")
                 df_display["longitude"] = df_display["longitude"].apply(lambda x: f"{x:.4f}°")
 
-            df_display.columns = ["Scan ID", "Distance", "Prob.", "Level", "Lat", "Lon"]
+            df_display.columns = ["Scan ID", "Distance", "Prob.", "Sensor", "Lat", "Lon"]
             st.dataframe(df_display, use_container_width=True, hide_index=True,
                          height=min(300, 36 + 35 * len(df_display)))
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<p class="section-header">📍 Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
-
-        if not df_tornados.empty:
-            top10 = df_tornados.nsmallest(10, "distance_km")[
-                ["scan_id", "distance_km", "probability", "alert_level"]
+        df_tornados_sensor = df_tornados.groupby("sensor").first().reset_index()
+        if not df_tornados_sensor.empty:
+            top10 = df_tornados_sensor.nsmallest(10, "distance_km")[
+                ["scan_id", "distance_km", "probability", "sensor"]
             ].copy()
-            top10["alert_level"] = top10["alert_level"].apply(
-                lambda lvl: f"{ALERT_ICONS.get(lvl,'')} {lvl}"
-            )
-            top10.columns = ["Scan ID", "Dist. (km)", "Prob.", "Level"]
+            top10.columns = ["Scan ID", "Dist. (km)", "Prob.", "Sensor"]
             top10["Prob."] = top10["Prob."].apply(lambda x: f"{x:.1%}")
             top10["Dist. (km)"] = top10["Dist. (km)"].apply(lambda x: f"{x:.1f}")
             st.dataframe(top10, use_container_width=True, hide_index=True, height=360)
@@ -441,7 +567,7 @@ else:
         if not df.empty:
             df_show = df.copy()
             show_cols = ["scan_id", "timestamp", "tornado_detected",
-                         "probability", "distance_km", "alert_level",
+                         "probability", "distance_km", "sensor",
                          "latitude", "longitude"]
             show_cols = [c for c in show_cols if c in df_show.columns]
             st.dataframe(

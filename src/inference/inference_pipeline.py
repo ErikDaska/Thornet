@@ -1,19 +1,18 @@
-"""
-inference_pipeline.py
-
-Continuous Inference Script for the Tornado Alert Dashboard.
-
-"""
-
 import logging
 import os
-import random
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+import re
+
+import mlflow
+import mlflow.pytorch
+from torch.utils.data import DataLoader
+import sys
+from datasets.tornet_dataset import TornetDataset
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -24,139 +23,133 @@ logger = logging.getLogger(__name__)
 
 # CONFIGURATION
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_server:5000")
-EXPERIMENT_NAME     = os.getenv("MLFLOW_EXPERIMENT_NAME", "Airflow_Automated_Run")
-OUTPUT_CSV          = Path(os.getenv("PREDICTIONS_OUTPUT", "/opt/airflow/data/dados_para_teste.csv"))
+OUTPUT_CSV          = Path(os.getenv("PREDICTIONS_OUTPUT", "/opt/airflow/data/offline_data_fallback.csv"))
 PROCESSED_DATA_DIR  = Path(os.getenv("PROCESSED_DATA_DIR", "/opt/airflow/data/processed"))
+RADARS_CSV_PATH     = Path(os.getenv("RADARS_CSV_PATH", "/opt/airflow/data/radars/radars.csv"))
 TARGET_YEAR         = int(os.getenv("TARGET_YEAR", "2013"))
-MAX_SAMPLES         = int(os.getenv("MAX_INFERENCE_SAMPLES", "50"))  # Limited for demo purposes
-ALERT_THRESHOLD_KM  = float(os.getenv("ALERT_THRESHOLD_KM", "200.0"))
 
 
+def _load_radar_lookup(radars_path: Path) -> pd.DataFrame:
+    """Loads the NEXRAD radar station database for coordinate lookups."""
+    if not radars_path.exists():
+        logger.warning(f"Radar database not found at {radars_path}.")
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(radars_path, index_col="radar_id")
+        logger.info(f"Loaded {len(df)} radar stations from {radars_path}.")
+        return df
+    except Exception as e:
+        logger.error(f"Failed to load radars.csv: {e}")
+        return pd.DataFrame()
+
+
+def _extract_radar_id(filename: str) -> str | None:
+    """
+    Extracts the radar station ID from a TorNet filename.
+    Expected format: PREFIX_YYMMDD_TIME_RADARID_...nc
+    E.g.: processed_NUL_140111_105240_KBMX_..._V06.nc -> KBMX
+    """
+    try:
+        clean_name = filename.replace("processed_", "")
+        parts = clean_name.split("_")
+        if len(parts) >= 4:
+            radar_id = parts[3]
+            if len(radar_id) == 4 and radar_id[0] in ("K", "P", "T"):
+                return radar_id
+    except Exception:
+        pass
+    return None
 
 
 def _run_model_inference() -> pd.DataFrame | None:
-    """
-    Attempts to load the model from MLflow and run inference on processed data.
-    Returns a DataFrame with predictions, or None on failure.
-    """
     try:
-        import mlflow
-        import mlflow.pytorch
-        from torch.utils.data import DataLoader, Subset
-        import sys
         sys.path.insert(0, str(Path(__file__).parent.parent))
-        from datasets.tornet_dataset import TornetDataset
-
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-        mlflow.set_registry_uri("sqlite:////mlflow/mlflow.db")
 
-        logger.info(f"🔍 Searching for the latest model in '{EXPERIMENT_NAME}'...")
-        runs = mlflow.search_runs(
-            experiment_names=[EXPERIMENT_NAME],
-            filter_string="tags.mlflow.runName LIKE '3dcnn_training_%'",
-            order_by=["start_time DESC"],
-            max_results=1
-        )
-
-        if runs.empty:
-            logger.warning("No training runs found in MLflow.")
-            return None
-
-        run_id   = runs.iloc[0].run_id
-        model_uri = f"runs:/{run_id}/model"
-        logger.info(f"✅ Model found: run_id={run_id}")
+        model_name = "ThornetTornadoPrediction"
+        alias = "production"
+        model_uri = f"models:/{model_name}@{alias}"
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model  = mlflow.pytorch.load_model(model_uri, map_location=device)
+        model = mlflow.pytorch.load_model(model_uri, map_location=device)
         model.eval()
-        logger.info(f"📦 Model loaded on {device}.")
+        logger.info(f"Model loaded successfully on {device}.")
 
-        # Look for processed data
         data_dir = PROCESSED_DATA_DIR / str(TARGET_YEAR)
-        if not data_dir.exists():
-            logger.warning(f"Data directory not found: {data_dir}")
-            return None
-
-        # Catalog for labels
-        catalog_candidates = [
-            PROCESSED_DATA_DIR.parent / "raw" / f"tornet_{TARGET_YEAR}" / "catalog.csv",
-            PROCESSED_DATA_DIR.parent / "raw" / "catalog.csv",
-        ]
-        catalog_path = next((p for p in catalog_candidates if p.exists()), None)
-
-        if catalog_path is None:
-            logger.warning("Catalog not found. Using zero-labels (no ground truth).")
-            # Create a temporary empty catalog
+        catalog_path = PROCESSED_DATA_DIR.parent / "raw" / f"tornet_{TARGET_YEAR}" / "catalog.csv"
+        if not catalog_path.exists():
+            logger.warning(f"Catalog not found at {catalog_path}. Creating a dummy catalog.")
             catalog_path = PROCESSED_DATA_DIR / "_empty_catalog.csv"
             pd.DataFrame(columns=["filename", "category"]).to_csv(catalog_path, index=False)
-
         dataset = TornetDataset(data_dir=data_dir, catalog_path=catalog_path)
+        radar_db = _load_radar_lookup(RADARS_CSV_PATH)
 
-        if len(dataset) == 0:
-            logger.warning("Empty dataset — no .nc files found.")
-            return None
-
-        # Select random subset for the demo
-        n_samples = min(MAX_SAMPLES, len(dataset))
-        indices   = random.sample(range(len(dataset)), n_samples)
-        subset    = Subset(dataset, indices)
-        loader    = DataLoader(subset, batch_size=16, shuffle=False, num_workers=0)
-
+        loader = DataLoader(dataset, batch_size=16, shuffle=False)
         records = []
-        now     = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        global_idx = 0
+        skipped = 0
 
         with torch.no_grad():
-            sample_idx = 0
             for inputs, _ in loader:
-                inputs  = inputs.to(device)
+                inputs = inputs.to(device)
                 outputs = model(inputs)
-                probs   = torch.sigmoid(outputs).cpu().numpy().flatten()
+                probs = torch.sigmoid(outputs).cpu().numpy().flatten()
 
                 for prob in probs:
-                    detected = int(prob > 0.5)
-                    # Note: TorNet scans don't have native GPS. Using 0,0 since simulation was removed.
-                    lat, lon = 0.0, 0.0 
-                    records.append({
-                        "timestamp":        now.isoformat(),
-                        "scan_id":          f"scan_{indices[sample_idx]:06d}",
-                        "tornado_detected": detected,
-                        "probability":      round(float(prob), 4),
-                        "latitude":         lat,
-                        "longitude":        lon,
-                        "alert_level":      _get_alert_level(float(prob), detected),
-                        "source":           "model_inference",
-                    })
-                    sample_idx += 1
+                    file_path = dataset.index_map[global_idx][0]
+                    filename = file_path.name
+                    
+                    radar_id = _extract_radar_id(filename)
 
-        logger.info(f"✅ Inference complete: {len(records)} scans processed.")
+                    match = re.search(r"_(\d{6})_(\d{6})_", filename)
+                    if match:
+                        d, t = match.groups()
+                        actual_ts = f"20{d[:2]}-{d[2:4]}-{d[4:]}T{t[:2]}:{t[2:4]}:{t[4:6]}Z"
+                    else:
+                        actual_ts = now.isoformat()
+
+                    if radar_id and not radar_db.empty and radar_id in radar_db.index:
+                        lat = float(radar_db.loc[radar_id, "lat"])
+                        lon = float(radar_db.loc[radar_id, "lon"])
+                        
+                        records.append({
+                            "timestamp": actual_ts,
+                            "scan_id": f"scan_{global_idx:06d}",
+                            "tornado_detected": int(prob > 0.5),
+                            "probability": round(float(prob), 4),
+                            "latitude": lat,
+                            "longitude": lon,
+                            "sensor": radar_id,
+                            "source": "thornet_production_v2",
+                        })
+                    else:
+                        skipped += 1
+                    
+                    global_idx += 1
+
+        logger.info(f"Inference complete: {len(records)} records generated, {skipped} skipped.")
         return pd.DataFrame(records)
 
     except Exception as e:
-        logger.error(f"Inference failed with real model: {e}", exc_info=True)
+        logger.error(f"Inference failed: {e}", exc_info=True)
         return None
-
 
 def main():
     logger.info("=" * 60)
-    logger.info("🌪️  TorNet — Continuous Inference Pipeline")
+    logger.info("🌪️  TorNet — Production Inference Pipeline v2")
     logger.info("=" * 60)
 
-    # Ensure output directory exists
     OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
 
-    # Try real inference only
     df = _run_model_inference()
 
     if df is not None and not df.empty:
-        # Save to CSV only if we have real predictions
         df.to_csv(OUTPUT_CSV, index=False)
-        n_tornadoes = int(df["tornado_detected"].sum())
-        logger.info(f"💾 Real predictions saved to '{OUTPUT_CSV}'")
-        logger.info(f"📊 Total scans: {len(df)} | Tornadoes detected: {n_tornadoes}")
+        logger.info(f"Results saved to {OUTPUT_CSV}")
     else:
-        logger.error("🔴 No real model predictions available. Skipping CSV update.")
+        logger.error("Inference produced no results.")
     logger.info("=" * 60)
-
 
 if __name__ == "__main__":
     main()

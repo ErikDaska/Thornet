@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 
 WORKDIR /code
 COPY ./api/requirements.txt /code/requirements.txt
@@ -10,5 +10,5 @@ ENV PYTHONPATH=/code/src
 
 COPY ./api/app /code/app
 
-# Start the FastAPI application using the production-ready CLI
-CMD ["fastapi", "run", "app/main.py", "--port", "80"]
+# Start the FastAPI application using uvicorn with reload for development
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "80", "--reload"]
