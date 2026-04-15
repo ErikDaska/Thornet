@@ -72,7 +72,6 @@ logs/
 *.jpg
 *.jpeg
 *.gif
-data/raw/dados_para_teste.csv
 
 # ── Airflow ───────────────────────────────────────────────────
 airflow.cfg

@@ -39,6 +39,7 @@ CHANNEL_ORDER = ['DBZ', 'VEL', 'KDP', 'RHOHV', 'ZDR', 'WIDTH', 'MASK']
 
 # Global State for Model
 model = None
+model_version = "unknown"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 @app.on_event("startup")
@@ -56,7 +57,8 @@ def startup_event():
         model = mlflow.pytorch.load_model(model_uri, map_location=torch.device("cpu"))
         model = model.to(device)
         model.eval()
-        logger.info(f"Loaded {MODEL_NAME} | Version: {model_info.version} on {device}")
+        model_version = model_info.version
+        logger.info(f"Loaded {MODEL_NAME} | Version: {model_version} on {device}")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
 
@@ -74,6 +76,7 @@ except Exception as e:
 # --- Schemas ---
 class PredictionItem(BaseModel):
     radar_id: str
+    sensor: str     # Unified with dashboard/pipeline naming
     lat: float
     lon: float
     tornado_probability: float
@@ -146,6 +149,21 @@ def scan_available_data():
 
 # --- Endpoints ---
 
+@app.get("/")
+def read_root():
+    return {"status": "FastAPI is running", "model": MODEL_NAME}
+
+@app.get("/health")
+def health_check():
+    """Detailed health check for dashboard observability."""
+    return {
+        "status": "online",
+        "model": MODEL_NAME,
+        "version": model_version,
+        "device": str(device),
+        "inventory_size": len(AVAILABLE_DATES)
+    }
+
 @app.get("/api/v1/inventory")
 def get_inventory():
     if not AVAILABLE_DATES:
@@ -212,6 +230,7 @@ def generate_forecast(request: ForecastRequest):
 
                 results.append(PredictionItem(
                     radar_id=radar_id,
+                    sensor=radar_id, # Mapping radar_id to sensor
                     lat=lat,
                     lon=lon,
                     tornado_probability=prob,

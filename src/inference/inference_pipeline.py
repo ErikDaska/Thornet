@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # CONFIGURATION
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow_server:5000")
-OUTPUT_CSV          = Path(os.getenv("PREDICTIONS_OUTPUT", "/opt/airflow/data/dados_para_teste.csv"))
+OUTPUT_CSV          = Path(os.getenv("PREDICTIONS_OUTPUT", "/opt/airflow/data/offline_data_fallback.csv"))
 PROCESSED_DATA_DIR  = Path(os.getenv("PROCESSED_DATA_DIR", "/opt/airflow/data/processed"))
 RADARS_CSV_PATH     = Path(os.getenv("RADARS_CSV_PATH", "/opt/airflow/data/radars/radars.csv"))
 TARGET_YEAR         = int(os.getenv("TARGET_YEAR", "2013"))

@@ -27,6 +27,7 @@ PredictionSchema = pa.DataFrameSchema({
     "longitude": pa.Column(float, checks=pa.Check.in_range(-180, 180)),
     "probability": pa.Column(float, checks=pa.Check.in_range(0, 1)),
     "tornado_detected": pa.Column(int, checks=pa.Check.isin([0, 1])),
+    "sensor": pa.Column(str),
 })
 
 
@@ -49,7 +50,7 @@ load_css("css/style.css")
 
 
 # CONSTANTS
-PREDICTIONS_PATH = Path(os.getenv("PREDICTIONS_CSV", "/app/data/dados_para_teste.csv")) 
+PREDICTIONS_PATH = Path(os.getenv("PREDICTIONS_CSV", "/app/data/offline_data_fallback.csv")) 
 API_URL = os.getenv("API_URL", "http://fastapi-service:80")
 REFRESH_INTERVAL_SECONDS = 30
 
@@ -73,7 +74,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 @st.cache_data(ttl=REFRESH_INTERVAL_SECONDS)
-def load_predictions(path: str) -> pd.DataFrame:
+def load_predictions_csv(path: str) -> pd.DataFrame:
     """Loads and validates the predictions CSV."""
     p = Path(path)
     if not p.exists():
@@ -81,22 +82,49 @@ def load_predictions(path: str) -> pd.DataFrame:
     
     try:
         df = pd.read_csv(p)
-        
-        # 1. Basic cleaning
         df.columns = [c.lower().strip() for c in df.columns]
-        
-        # 2. Strict Validation with Pandera
-        validated_df = PredictionSchema.validate(df)
-        
-        return validated_df
-
-    except pa.errors.SchemaError as ve:
-        st.error(f"Data Validation Error: The inference output format has changed.")
-        st.sidebar.error(f"Validation Detail: {ve}")
-        return pd.DataFrame()
+        return PredictionSchema.validate(df)
     except Exception as e:
-        st.error(f"Unexpected error loading data: {e}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=600)
+def fetch_api_inventory() -> list:
+    """Fetches list of available dates from the API."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{API_URL}/api/v1/inventory")
+            if resp.status_code == 200:
+                return resp.json().get("dates", [])
+    except Exception:
+        pass
+    return []
+
+@st.cache_data(ttl=3600)
+def fetch_api_forecast(target_date_iso: str) -> pd.DataFrame:
+    """Fetches forecast for a specific date from the API."""
+    try:
+        # Note: st.spinner is handled in the main loop to avoid cache issues
+        with httpx.Client(timeout=300.0) as client:
+            resp = client.post(f"{API_URL}/api/v1/forecast", json={"date_": target_date_iso})
+            if resp.status_code == 200:
+                data = resp.json()
+                predictions = data.get("predictions", [])
+                if not predictions:
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame(predictions)
+                # Schema Adaptation
+                df["probability"] = df["tornado_probability"]
+                df["latitude"] = df["lat"]
+                df["longitude"] = df["lon"]
+                df["tornado_detected"] = (df["probability"] > 0.5).astype(int)
+                df["scan_id"] = [f"api_{i:04d}" for i in range(len(df))]
+                # Sensor is already in the API response now
+                
+                return PredictionSchema.validate(df)
+    except Exception as e:
+        st.sidebar.warning(f"API Fetch Error: {e}")
+    return pd.DataFrame()
 
 
 def enrich_with_distance(df: pd.DataFrame, user_lat: float, user_lon: float) -> pd.DataFrame:
@@ -228,13 +256,40 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
     folium.LayerControl().add_to(m)
     return m
 
-# LOAD DATA
-df_raw = load_predictions(str(PREDICTIONS_PATH))
+# --- DATA SOURCE INITIALIZATION ---
+api_online = False
+api_dates = []
+api_metadata = {}
+try:
+    with httpx.Client(timeout=3.0) as client:
+        resp = client.get(f"{API_URL}/health")
+        if resp.status_code == 200:
+            api_online = True
+            api_metadata = resp.json()
+    if api_online:
+        api_dates = fetch_api_inventory()
+except Exception:
+    api_online = False
 
-df_raw["timestamp_dt"] = pd.to_datetime(df_raw["timestamp"])
+# Load Fallback CSV
+df_csv = load_predictions_csv(str(PREDICTIONS_PATH))
+csv_dates = []
+if not df_csv.empty:
+    df_csv["timestamp_dt"] = pd.to_datetime(df_csv["timestamp"])
+    csv_dates = df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y").unique().tolist()
 
+# Normalize API dates to friendly format for the UI
+api_dates_friendly = []
+for d in api_dates:
+    try:
+        api_dates_friendly.append(datetime.strptime(d, "%Y-%m-%d").strftime("%d - %m - %Y"))
+    except:
+        pass
 
-timestamp_prod = df_raw["timestamp_dt"].dt.strftime("%d - %m - %Y").unique().tolist()
+# Consolidate all available dates for the selector
+timestamp_prod = sorted(list(set(api_dates_friendly + csv_dates)), reverse=True)
+if not timestamp_prod:
+    timestamp_prod = ["No Data Available"]
 
 # SIDEBAR
 with st.sidebar:
@@ -302,41 +357,66 @@ with st.sidebar:
     st.markdown('<p class="section-header">🔄 Data</p>', unsafe_allow_html=True)
 
     auto_refresh = st.toggle(f"Auto‑refresh ({REFRESH_INTERVAL_SECONDS}s)", value=True, key="auto_refresh")
+    
+    data_source = st.radio(
+        "Select Data Source",
+        options=["Live API (Real-time)", "Local CSV (Offline Fallback)"],
+        index=0 if api_online else 1,
+        help="Choose between real-time model inference or cached offline data.",
+        key="data_source_select"
+    )
     if st.button("🔄 Refresh Now", use_container_width=True, key="refresh_btn"):
         st.cache_data.clear()
         st.rerun()
 
     st.caption(f"📂 `{PREDICTIONS_PATH}`")
 
-    # API STATUS INDICATOR (Moved to bottom)
-    st.markdown("<br><br>", unsafe_allow_html=True) # Spacer
-    st.divider()
-    st.markdown('<p class="section-header" style="font-size:0.75rem">🔌 Backend Status</p>', unsafe_allow_html=True)
-    
-    api_online = False
-    try:
-        with httpx.Client(timeout=1.0) as client:
-            resp = client.get(f"{API_URL}/")
-            api_online = resp.status_code == 200
-    except Exception:
-        api_online = False
-
     if api_online:
-        st.markdown('<span style="color:#10b981; font-weight:700">● ONLINE</span>', unsafe_allow_html=True)
+        mv = api_metadata.get("version", "unknown")
+        dv = api_metadata.get("device", "cpu")
+        st.markdown(f'<span style="color:#10b981; font-weight:700">● ONLINE | v{mv} ({dv.upper()})</span>', unsafe_allow_html=True)
     else:
         st.markdown('<span style="color:#ef4444; font-weight:700">○ OFFLINE</span>', unsafe_allow_html=True)
         st.caption("Using CSV fallback.")
 
-df_raw_distances = enrich_with_distance(df_raw, user_lat, user_lon) if not df_raw.empty else pd.DataFrame()
+# --- DATA SELECTION LOGIC ---
+df = pd.DataFrame()
+if timestamp and timestamp != "No Data Available":
+    try:
+        target_iso = datetime.strptime(timestamp, "%d - %m - %Y").strftime("%Y-%m-%d")
+        
+        # Choice 1: Live API
+        if data_source == "Live API (Real-time)":
+            if api_online and target_iso in api_dates:
+                with st.spinner(f"Running Deep Learning Inference for {target_iso}... (First time may take a few minutes)"):
+                    df = fetch_api_forecast(target_iso)
+                
+                # RELIABILITY-FIRST: Automatic failover if API fails
+                if df.empty and not df_csv.empty:
+                    st.warning("API fetch failed or timed out. Automatically falling back to local CSV records.")
+                    df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
+            else:
+                if not api_online:
+                    st.error("API Backend is currently OFFLINE. Automatically attempting to load from Local CSV...")
+                else:
+                    st.warning(f"No API data for {target_iso}. Attempting CSV fallback...")
+                
+                if not df_csv.empty:
+                    df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
+            
+        # Choice 2: Local CSV
+        else:
+            if not df_csv.empty:
+                df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
+            else:
+                st.error("Fallback CSV not found. Please trigger the Airflow pipeline.")
 
-#Just show tornados from timestamps choiced by the user
+    except Exception as e:
+        st.error(f"Error loading data for {timestamp}: {e}")
 
-df_raw_distances["timestamp_dt"] = pd.to_datetime(df_raw_distances["timestamp"])
-
-
-df = df_raw_distances[
-    df_raw_distances["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp
-]
+# Enrich the selected data with distances
+if not df.empty:
+    df = enrich_with_distance(df, user_lat, user_lon)
 
 # Active tornadoes within radius
 if not df.empty:
