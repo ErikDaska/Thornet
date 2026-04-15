@@ -343,28 +343,38 @@ with st.sidebar:
         key="threshold_slider"
     )
 
-    st.markdown('<p class="section-header"> TimeStamp with Data</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">📅 Schedule & Source</p>', unsafe_allow_html=True)
+
+    # Initialize session state for source selection to avoid NameErrors
+    if "data_source_select" not in st.session_state:
+        st.session_state["data_source_select"] = "Live API (Real-time)" if api_online else "Local CSV (Offline Fallback)"
+
+    # Filter available timestamps based on CURRENT source in session state
+    current_source_val = st.session_state["data_source_select"]
+    if current_source_val == "Live API (Real-time)":
+        ts_options = api_dates_friendly if api_dates_friendly else ["No API Data Available"]
+    else:
+        ts_options = csv_dates if csv_dates else ["No CSV Data Available"]
 
     timestamp = st.selectbox(
         "Select Timestamp",
-        options=timestamp_prod,
+        options=ts_options,
         key="timestamp_select"
     )
 
-    show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
-
-    st.divider()
-    st.markdown('<p class="section-header">🔄 Data</p>', unsafe_allow_html=True)
-
-    auto_refresh = st.toggle(f"Auto‑refresh ({REFRESH_INTERVAL_SECONDS}s)", value=True, key="auto_refresh")
-    
     data_source = st.radio(
-        "Select Data Source",
+        "Data Source Mode",
         options=["Live API (Real-time)", "Local CSV (Offline Fallback)"],
-        index=0 if api_online else 1,
         help="Choose between real-time model inference or cached offline data.",
         key="data_source_select"
     )
+
+    st.divider()
+    st.markdown('<p class="section-header">🔄 Control Panel</p>', unsafe_allow_html=True)
+
+    show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
+    
+    auto_refresh = st.toggle(f"Auto‑refresh ({REFRESH_INTERVAL_SECONDS}s)", value=True, key="auto_refresh")
     if st.button("🔄 Refresh Now", use_container_width=True, key="refresh_btn"):
         st.cache_data.clear()
         st.rerun()
@@ -372,9 +382,10 @@ with st.sidebar:
     st.caption(f"📂 `{PREDICTIONS_PATH}`")
 
     if api_online:
+        mn = api_metadata.get("model", "Model")
         mv = api_metadata.get("version", "unknown")
         dv = api_metadata.get("device", "cpu")
-        st.markdown(f'<span style="color:#10b981; font-weight:700">● ONLINE | v{mv} ({dv.upper()})</span>', unsafe_allow_html=True)
+        st.markdown(f'<span style="color:#10b981; font-weight:700">● ONLINE | {mn} v{mv} ({dv.upper()})</span>', unsafe_allow_html=True)
     else:
         st.markdown('<span style="color:#ef4444; font-weight:700">○ OFFLINE</span>', unsafe_allow_html=True)
         st.caption("Using CSV fallback.")

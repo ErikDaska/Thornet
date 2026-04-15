@@ -45,7 +45,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 @app.on_event("startup")
 def startup_event():
     """Load model and scan inventory on startup."""
-    global model, AVAILABLE_DATES
+    global model, model_version, AVAILABLE_DATES
     
     # 1. Load Model from MLflow
     try:
@@ -91,33 +91,45 @@ class ForecastRequest(BaseModel):
 
 # --- Helpers ---
 def load_and_preprocess_file(filepath: str) -> torch.Tensor:
-    """Reads NetCDF and converts to normalized Tensor."""
+    """
+    Reads NetCDF and converts to normalized 14-channel Tensor [1, 14, 120, 240].
+    Note: The files in /data/processed are already normalized by the data_processing pipeline.
+    """
     with xr.open_dataset(filepath, engine="h5netcdf") as ds:
         if 'time' in ds.dims:
             ds = ds.isel(time=0)
 
-        if 'DBZ' in ds.data_vars:
-            ds['MASK'] = (~ds['DBZ'].isnull()).astype(float)
-        else:
-            ds['MASK'] = xr.zeros_like(ds[list(ds.data_vars)[0]])
-
+        # 1. Fill NaNs and ensure float32
+        # (Normalization is skipped because it's already done in the processing pipeline)
         ds = ds.fillna(0.0)
 
-        for var, bounds in VAR_BOUNDS.items():
-            if var in ds.data_vars:
-                ds[var] = (ds[var] - bounds['min']) / (bounds['max'] - bounds['min'])
-                ds[var] = ds[var].clip(0.0, 1.0)
-
-        channels_data = []
-        for var in CHANNEL_ORDER:
-            if var in ds.data_vars:
-                channels_data.append(ds[var].values.copy())
+        # 2. MASK Creation (if missing in the file)
+        if 'MASK' not in ds.data_vars:
+            if 'DBZ' in ds.data_vars:
+                ds['MASK'] = (~ds['DBZ'].isnull()).astype(np.float32)
             else:
-                shape = (ds.sizes.get('sweep', 1), ds.sizes.get('azimuth', 1), ds.sizes.get('range', 1))
-                channels_data.append(np.zeros(shape, dtype=np.float32))
+                # Use first available var for shape fallback
+                first_var = list(ds.data_vars)[0]
+                ds['MASK'] = xr.zeros_like(ds[first_var]).astype(np.float32)
 
-    stacked_data = np.stack(channels_data, axis=0)
-    return torch.tensor(stacked_data, dtype=torch.float32).unsqueeze(0)
+        # 3. Channel Stacking: 14 channels (7 vars x 2 sweeps)
+        # Sequence: All vars for Sweep 0, then all vars for Sweep 1
+        # Order within each sweep: DBZ, VEL, ZDR, RHOHV, KDP, WIDTH, MASK
+        all_channels = []
+        n_sweeps = ds.sizes.get('sweep', 1)
+        
+        # Standard TorNet model expects 14 channels
+        for s_idx in range(2): 
+            current_s = s_idx if s_idx < n_sweeps else 0 
+            for var in ['DBZ', 'VEL', 'ZDR', 'RHOHV', 'KDP', 'WIDTH', 'MASK']:
+                if var in ds.data_vars:
+                    data = ds[var].isel(sweep=current_s).values.copy()
+                    all_channels.append(data.astype(np.float32))
+                else:
+                    all_channels.append(np.zeros((120, 240), dtype=np.float32))
+
+    stacked_data = np.stack(all_channels, axis=0) # [14, 120, 240]
+    return torch.from_numpy(stacked_data).float().unsqueeze(0) # [1, 14, 120, 240]
 
 # No main.py, confirma que estas funções estão assim:
 
@@ -203,10 +215,11 @@ def generate_forecast(request: ForecastRequest):
                 filename = os.path.basename(filepath)
                 parts = filename.split("_")
                 
-                # Extract metadata from filename: PREFIX_DATE_TIME_RADARID_...
+                # Extract metadata from filename: processed_PREFIX_DATE_HHMMSS_RADARID_...
                 try:
-                    raw_time = parts[2] # HHMMSS
-                    radar_id = parts[3]
+                    # Example parts: ['processed', 'NUL', '130831', '234422', 'KBGM', ...]
+                    raw_time = parts[3] # Correct HHMMSS index
+                    radar_id = parts[4] # Correct RadarID index
                     
                     # Construct valid ISO timestamp for the Streamlit filter
                     dt_obj = datetime.combine(
@@ -220,7 +233,16 @@ def generate_forecast(request: ForecastRequest):
 
                 # Inference
                 input_tensor = load_and_preprocess_file(filepath).to(device)
-                prob = torch.sigmoid(model(input_tensor)).item()
+                
+                # DIAGNOSTIC: Check input stats
+                t_min = input_tensor.min().item()
+                t_max = input_tensor.max().item()
+                t_mean = input_tensor.mean().item()
+                
+                raw_output = model(input_tensor)
+                prob = torch.sigmoid(raw_output).item()
+
+                logger.info(f"Scan {filename}: Prob={prob:.4f} | Logit={raw_output.item():.4f} | Input[min={t_min:.4f}, max={t_max:.4f}, mean={t_mean:.4f}]")
 
                 # Geo Lookup
                 lat, lon = 0.0, 0.0
