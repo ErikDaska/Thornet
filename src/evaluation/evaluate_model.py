@@ -224,7 +224,7 @@ def evaluate(cfg: DictConfig):
 
     # Load Test Dataset
     processed_data_path = Path(cfg.paths.processed_data_dir) / str(cfg.api.dataset.target_year)
-    catalog_path = Path(cfg.api.dataset.raw_path) / "catalog.csv"
+    catalog_path = Path(cfg.api.dataset.catalog_path) / "catalog.csv"
     test_indices_path = Path(cfg.paths.processed_data_dir) / f"test_indices_{cfg.api.dataset.target_year}.csv"
 
     if not test_indices_path.exists():
