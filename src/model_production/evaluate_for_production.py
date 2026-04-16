@@ -38,7 +38,7 @@ def evaluate_for_production(cfg: DictConfig):
     
     # 2. Load Dataset
     processed_data_path = Path(cfg.paths.processed_data_dir) / str(cfg.api.dataset.target_year)
-    catalog_path = Path(cfg.api.dataset.raw_path) / "catalog.csv"
+    catalog_path = Path(cfg.api.dataset.catalog_path) / "catalog.csv"
     test_indices_path = Path(cfg.paths.processed_data_dir) / f"test_indices_{cfg.api.dataset.target_year}.csv"
 
     full_dataset = TornetDataset(data_dir=processed_data_path, catalog_path=catalog_path)
