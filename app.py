@@ -1,5 +1,5 @@
 """
-app.py — TorNet Tornado Alert Dashboard
+app.py — ThorNet Tornado Alert Dashboard
 Real-Time Tornado Alert Dashboard
 """
 
@@ -34,7 +34,7 @@ PredictionSchema = pa.DataFrameSchema({
 # PAGE CONFIGURATION
 
 st.set_page_config(
-    page_title="TorNet — Tornado Alert Dashboard",
+    page_title="ThorNet — Tornado Alert Dashboard",
     page_icon="🌪️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -293,7 +293,7 @@ if not timestamp_prod:
 
 # SIDEBAR
 with st.sidebar:
-    st.markdown("## 🌪️ TorNet")
+    st.markdown("## 🌪️ ThorNet")
     st.markdown('<p style="color:#64748b;font-size:0.85rem;margin-top:-8px">Tornado Alert Dashboard</p>',
                 unsafe_allow_html=True)
 
@@ -314,7 +314,7 @@ with st.sidebar:
         "New York, NY":               (40.7128, -74.0060),
     }
 
-    preset = st.selectbox("🏙️ Preset City", list(presets.keys()), key="preset_city")
+    preset = st.selectbox("Preset City", list(presets.keys()), key="preset_city")
     prelat, prelon = presets[preset]
 
     default_lat = prelat if prelat is not None else 37.6872
@@ -331,7 +331,7 @@ with st.sidebar:
                                    step=0.01, format="%.4f", key="lon_input")
 
     st.divider()
-    st.markdown('<p class="section-header">⚙️ Alert Parameters</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Alert Parameters</p>', unsafe_allow_html=True)
 
     threshold_km = st.slider(
         "Alert Radius (km)",
@@ -343,7 +343,7 @@ with st.sidebar:
         key="threshold_slider"
     )
 
-    st.markdown('<p class="section-header">📅 Schedule & Source</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Schedule & Source</p>', unsafe_allow_html=True)
 
     # Initialize session state for source selection to avoid NameErrors
     if "data_source_select" not in st.session_state:
@@ -370,7 +370,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown('<p class="section-header">🔄 Control Panel</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Control Panel</p>', unsafe_allow_html=True)
 
     show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
     
@@ -379,7 +379,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    st.caption(f"📂 `{PREDICTIONS_PATH}`")
 
     if api_online:
         mn = api_metadata.get("model", "Model")
@@ -444,7 +443,7 @@ else:
 is_alert = not df_in_range.empty
 
 # HEADER
-st.markdown("# 🌪️ TorNet Tornado Alert Dashboard")
+st.markdown("# 🌪️ ThorNet Tornado Alert Dashboard")
 st.markdown('<p style="color:#64748b;margin-top:-12px;margin-bottom:4px">Real-Time Storm Monitoring System &nbsp;·&nbsp; Powered by MLflow + Apache Airflow</p>',
             unsafe_allow_html=True)
 
@@ -548,7 +547,7 @@ else:
                          height=min(300, 36 + 35 * len(df_display)))
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<p class="section-header">📍 Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-header">Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
         df_tornados_sensor = df_tornados.groupby("sensor").first().reset_index()
         if not df_tornados_sensor.empty:
             top10 = df_tornados_sensor.nsmallest(10, "distance_km")[
@@ -585,7 +584,7 @@ else:
 st.divider()
 st.markdown(
     '<p style="text-align:center;color:#374151;font-size:0.8rem">'
-    '🌪️ TorNet Tornado Alert Dashboard &nbsp;·&nbsp; '
+    '🌪️ ThorNet Tornado Alert Dashboard &nbsp;·&nbsp; '
     'Powered by <strong style="color:#4f46e5">MLflow</strong>, '
     '<strong style="color:#0ea5e9">Apache Airflow</strong> & '
     '<strong style="color:#e11d48">PyTorch</strong> &nbsp;·&nbsp; '

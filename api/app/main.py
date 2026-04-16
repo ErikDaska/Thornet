@@ -25,9 +25,11 @@ MODEL_NAME = "ThornetTornadoPrediction"
 ALIAS = "production"
 DATA_DIR = os.getenv("PROCESSED_DATA_DIR", "/data/processed")
 AVAILABLE_DATES = []
+FORECAST_RESULTS_CACHE = {} # In-memory cache for inference results
+
 
 # Configuration constants
-CHANNEL_ORDER = ['DBZ', 'VEL', 'ZDR', 'RHOHV', 'KDP', 'WIDTH', 'MASK']
+CHANNEL_ORDER = ['DBZ', 'VEL', 'ZDR', 'RHOHV', 'KDP', 'WIDTH', 'MASK'] 
 
 # Global State for Model
 model = None
@@ -231,10 +233,19 @@ def get_radars():
 
 @app.post("/api/v1/forecast", response_model=ForecastResponse)
 def generate_forecast(request: ForecastRequest):
+    global FORECAST_RESULTS_CACHE
+    
     if not model:
         raise HTTPException(status_code=503, detail="Model not loaded.")
 
+    # Cache Lookup
+    cache_key = f"{request.date_.isoformat()}_{model_version}"
+    if cache_key in FORECAST_RESULTS_CACHE:
+        logger.info(f"Cache Hit: Returning saved results for {cache_key}")
+        return FORECAST_RESULTS_CACHE[cache_key]
+
     try:
+
         date_str = request.date_.strftime("%y%m%d")
         search_pattern = os.path.join(DATA_DIR, "**", f"*_{date_str}_*.nc")
         matched_files = glob.glob(search_pattern, recursive=True)
@@ -292,7 +303,12 @@ def generate_forecast(request: ForecastRequest):
                     timestamp=ts_str
                 ))
 
-        return ForecastResponse(target_date=request.date_, predictions=results)
+        # Save to Cache before returning
+        response = ForecastResponse(target_date=request.date_, predictions=results)
+        FORECAST_RESULTS_CACHE[cache_key] = response
+        
+        return response
+
 
     except Exception as e:
         logger.error(f"Inference failed: {e}", exc_info=True)
