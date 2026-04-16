@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster
 import pandera as pa
 from pandera.typing import Series
 import httpx
@@ -33,6 +32,7 @@ PredictionSchema = pa.DataFrameSchema({
 
 
 # PAGE CONFIGURATION
+
 st.set_page_config(
     page_title="TorNet — Tornado Alert Dashboard",
     page_icon="🌪️",
@@ -62,15 +62,15 @@ ALERT_COLORS = {
 }
 
 
-def haversine_vectorized(lat1: float, lon1: float, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
-    """Fast vectorized distance calculation in km."""
-    R = 6371.0
-    lat1, lon1, lats, lons = map(np.radians, [lat1, lon1, lats, lons])
-    dlat = lats - lat1
-    dlon = lons - lon1
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lats) * np.sin(dlon/2)**2
-    c = 2 * np.arcsin(np.sqrt(a))
-    return R * c
+# HELPER FUNCTIONS
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distance in km between two points using the Haversine formula."""
+    R = 6371.0  # Earth's mean radius in km
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi       = math.radians(lat2 - lat1)
+    dlambda    = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
 
 
 @st.cache_data(ttl=REFRESH_INTERVAL_SECONDS)
@@ -103,7 +103,8 @@ def fetch_api_inventory() -> list:
 def fetch_api_forecast(target_date_iso: str) -> pd.DataFrame:
     """Fetches forecast for a specific date from the API."""
     try:
-        with httpx.Client(timeout=300.0) as client: # 5 minutes timeout, so that the model has time to generate the predictions
+        # Note: st.spinner is handled in the main loop to avoid cache issues
+        with httpx.Client(timeout=300.0) as client:
             resp = client.post(f"{API_URL}/api/v1/forecast", json={"date_": target_date_iso})
             if resp.status_code == 200:
                 data = resp.json()
@@ -126,20 +127,15 @@ def fetch_api_forecast(target_date_iso: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False)
 def enrich_with_distance(df: pd.DataFrame, user_lat: float, user_lon: float) -> pd.DataFrame:
-    """Vectorized distance calculation for high performance."""
+    """Adds 'distance_km' column with Haversine distance to the user."""
     if df.empty:
         return df
-    
-    # Efficiently calculate all distances at once using NumPy
     df = df.copy()
-    df["distance_km"] = haversine_vectorized(
-        user_lat, user_lon, 
-        df["latitude"].values.astype(float), 
-        df["longitude"].values.astype(float)
+    df["distance_km"] = df.apply(
+        lambda r: haversine_km(user_lat, user_lon, float(r["latitude"]), float(r["longitude"])),
+        axis=1
     ).round(1)
-    
     return df.sort_values("distance_km")
 
 
@@ -186,42 +182,37 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
 
     # Markers (Tornados & Normal Scans)
     if not df.empty:
-        # Isolate real tornadoes
+        # 1. Isolar os tornados reais
         tornados = df[df["tornado_detected"] == 1]
-        tornado_sensors = tornados["sensor"].unique()
+        sensores_com_tornado = tornados["sensor"].unique()
 
-        # Draw normal scans using MarkerCluster
+        # 2. Desenhar scans normais APENAS se "active_only" for False
+        # E garantindo que não desenhamos por cima de um sensor que já tem tornado
         if not active_only:
-            normal_scans = df[
+            scans_normais = df[
                 (df["tornado_detected"] == 0) & 
-                (~df["sensor"].isin(tornado_sensors))
+                (~df["sensor"].isin(sensores_com_tornado))
             ]
-            
-            if not normal_scans.empty:
-                marker_cluster = MarkerCluster(
-                    name="Normal Scans",
-                    overlay=True,
-                    control=True,
-                    options={'showCoverageOnHover': False, 'zoomToBoundsOnClick': True}
+
+            for _, row in scans_normais.iterrows():
+                lat = float(row["latitude"])
+                lon = float(row["longitude"])
+                ses = str(row.get("sensor", "NONE"))
+
+                # Círculo azul pequeno para scans sem alerta
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=5,  # Mais pequeno que o tornado para não distrair
+                    color="#3b82f6", # Azul Folium/Tailwind
+                    weight=1,
+                    fill=True,
+                    fill_color="#3b82f6",
+                    fill_opacity=0.4,
+                    tooltip=f"ℹ️ Clear Scan | Sensor: {ses}"
                 ).add_to(m)
 
-                for _, row in normal_scans.iterrows():
-                    lat, lon = float(row["latitude"]), float(row["longitude"])
-                    ses = str(row.get("sensor", "NONE"))
 
-                    folium.CircleMarker(
-                        location=[lat, lon],
-                        radius=4,
-                        color="#3b82f6",
-                        weight=1,
-                        fill=True,
-                        fill_color="#3b82f6",
-                        fill_opacity=0.4,
-                        tooltip=f"ℹ️ Clear Scan | Sensor: {ses}"
-                    ).add_to(marker_cluster)
-
-
-        # Draw tornados
+        # 3. Desenhar os Tornados (Sempre visíveis se existirem)
         for _, row in tornados.iterrows():
             lat  = float(row["latitude"])
             lon  = float(row["longitude"])
@@ -233,6 +224,7 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
             color = ("red" if ses == "CRITICAL" else
                      "orange" if ses == "HIGH" else "beige")
 
+            # Círculo vermelho/laranja de impacto
             folium.CircleMarker(
                 location=[lat, lon],
                 radius=12 + prob * 10,
@@ -243,13 +235,13 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
                 fill_opacity=0.35,
             ).add_to(m)
             
-            # Center icon for tornado alert
+            # Ícone central de alerta
             folium.Marker(
                 location=[lat, lon],
-                tooltip=f"Tornado | {dist:.0f} km | p={prob:.2f}",
+                tooltip=f"🌪️ {ses} | {dist:.0f} km | p={prob:.2f}",
                 popup=folium.Popup(
                     f"""<div style='font-family:sans-serif;font-size:13px'>
-                    <b>Tornado Detected</b><br>
+                    <b>🌪️ Tornado Detected</b><br>
                     <b>Scan ID:</b> {sid}<br>
                     <b>Probability:</b> {prob:.1%}<br>
                     <b>Sensor:</b> {ses}<br>
@@ -264,7 +256,7 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
     folium.LayerControl().add_to(m)
     return m
 
-# DATA SOURCE INITIALIZATION
+# --- DATA SOURCE INITIALIZATION ---
 api_online = False
 api_dates = []
 api_metadata = {}
@@ -301,7 +293,7 @@ if not timestamp_prod:
 
 # SIDEBAR
 with st.sidebar:
-    st.markdown("## TorNet")
+    st.markdown("## 🌪️ TorNet")
     st.markdown('<p style="color:#64748b;font-size:0.85rem;margin-top:-8px">Tornado Alert Dashboard</p>',
                 unsafe_allow_html=True)
 
@@ -322,7 +314,7 @@ with st.sidebar:
         "New York, NY":               (40.7128, -74.0060),
     }
 
-    preset = st.selectbox("Preset City", list(presets.keys()), key="preset_city")
+    preset = st.selectbox("🏙️ Preset City", list(presets.keys()), key="preset_city")
     prelat, prelon = presets[preset]
 
     default_lat = prelat if prelat is not None else 37.6872
@@ -339,7 +331,7 @@ with st.sidebar:
                                    step=0.01, format="%.4f", key="lon_input")
 
     st.divider()
-    st.markdown('<p class="section-header">Alert Parameters</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">⚙️ Alert Parameters</p>', unsafe_allow_html=True)
 
     threshold_km = st.slider(
         "Alert Radius (km)",
@@ -351,7 +343,7 @@ with st.sidebar:
         key="threshold_slider"
     )
 
-    st.markdown('<p class="section-header">Schedule & Source</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">📅 Schedule & Source</p>', unsafe_allow_html=True)
 
     # Initialize session state for source selection to avoid NameErrors
     if "data_source_select" not in st.session_state:
@@ -378,7 +370,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown('<p class="section-header">Control Panel</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">🔄 Control Panel</p>', unsafe_allow_html=True)
 
     show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
     
@@ -387,6 +379,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
+    st.caption(f"📂 `{PREDICTIONS_PATH}`")
 
     if api_online:
         mn = api_metadata.get("model", "Model")
@@ -397,18 +390,18 @@ with st.sidebar:
         st.markdown('<span style="color:#ef4444; font-weight:700">○ OFFLINE</span>', unsafe_allow_html=True)
         st.caption("Using CSV fallback.")
 
-# DATA SELECTION LOGIC
+# --- DATA SELECTION LOGIC ---
 df = pd.DataFrame()
 if timestamp and timestamp != "No Data Available":
     try:
         target_iso = datetime.strptime(timestamp, "%d - %m - %Y").strftime("%Y-%m-%d")
         
-        # Live API
+        # Choice 1: Live API
         if data_source == "Live API (Real-time)":
             if api_online and target_iso in api_dates:
                 df = fetch_api_forecast(target_iso)
                 
-                # Automatic failover if API fails
+                # RELIABILITY-FIRST: Automatic failover if API fails
                 if df.empty and not df_csv.empty:
                     st.warning("API fetch failed or timed out. Automatically falling back to local CSV records.")
                     df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
@@ -421,7 +414,7 @@ if timestamp and timestamp != "No Data Available":
                 if not df_csv.empty:
                     df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
             
-        # Local CSV
+        # Choice 2: Local CSV
         else:
             if not df_csv.empty:
                 df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
@@ -555,7 +548,7 @@ else:
                          height=min(300, 36 + 35 * len(df_display)))
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<p class="section-header">Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-header">📍 Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
         df_tornados_sensor = df_tornados.groupby("sensor").first().reset_index()
         if not df_tornados_sensor.empty:
             top10 = df_tornados_sensor.nsmallest(10, "distance_km")[
@@ -568,7 +561,7 @@ else:
         else:
             st.info("No tornado data available in the current dataset.")
 
-    # Complete data table
+    # Complete data table (expandable)
     with st.expander("📋 See all prediction data", expanded=False):
         if not df.empty:
             df_show = df.copy()

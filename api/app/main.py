@@ -127,10 +127,10 @@ def load_and_preprocess_file(filepath: str) -> torch.Tensor:
 
 def adapt_model_input(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
     """
-    Dynamically adapts the standardized 5D TorNet tensor to the specific model architecture.
+    Dynamically adapts the standardized 5D ThorNet tensor to the specific model architecture.
     Ensures compatibility across 2D, 3D, and Recurrent neural networks.
     """
-    # Original TorNet structure: [Batch, Channels, Frames/Sweeps, H, W] -> e.g., [B, 7, 2, 120, 240]
+    # Original ThorNet structure: [Batch, Channels, Frames/Sweeps, H, W] -> e.g., [B, 7, 2, 120, 240]
     b, c, f, h, w = x.shape
     
     # Architecture Detection
