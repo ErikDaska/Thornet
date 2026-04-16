@@ -31,13 +31,6 @@ Ensure **Docker Desktop** is running, then execute the automated setup script:
 docker compose up -d --build
 ```
 
-### What the automated setup performs:
-1.  **Dependency Management**: Configures a Python virtual environment and installs requirements.
-2.  **Infrastructure**: Spins up the full Docker container stack (Postgres, MLflow, Airflow, etc.).
-3.  **Automatic Data Sync**: Downloads a subset of the TorNet dataset from Zenodo if missing and initializes the DVC local remote.
-4.  **Pipeline Induction**: Executes the primary data ingestion pipeline to register structural metadata into MLflow.
-
----
 
 ## 🌪️ Model Lifecycle & Management
 
