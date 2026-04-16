@@ -57,7 +57,7 @@ def model_production(cfg: DictConfig):
     best_global_ap = 0.0
     best_model_name = None
     best_model_version = None
-    best_run_id = None  # NEW: Track the run_id so we can grab the artifact later
+    best_run_id = None
 
     # 3. The Gauntlet (Sequential testing to avoid OOM)
     for rm in registered_models:
