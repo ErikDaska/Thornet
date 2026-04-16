@@ -426,6 +426,14 @@ if timestamp and timestamp != "No Data Available":
 # Enrich the selected data with distances
 if not df.empty:
     df = enrich_with_distance(df, user_lat, user_lon)
+    
+    if "timestamp" in df.columns:
+        df = df.sort_values(by=["sensor", "timestamp", "probability"], ascending=[True, False, False])
+    else:
+        df = df.sort_values(by=["sensor", "probability"], ascending=[True, False])
+        
+    df = df.groupby("sensor").first().reset_index()
+
 
 # Active tornadoes within radius
 if not df.empty:
