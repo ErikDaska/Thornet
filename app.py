@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
+from folium.plugins import MarkerCluster
 import pandera as pa
 from pandera.typing import Series
 import httpx
@@ -62,15 +63,15 @@ ALERT_COLORS = {
 }
 
 
-# HELPER FUNCTIONS
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Distance in km between two points using the Haversine formula."""
-    R = 6371.0  # Earth's mean radius in km
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi       = math.radians(lat2 - lat1)
-    dlambda    = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
+def haversine_vectorized(lat1: float, lon1: float, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+    """Fast vectorized distance calculation in km."""
+    R = 6371.0
+    lat1, lon1, lats, lons = map(np.radians, [lat1, lon1, lats, lons])
+    dlat = lats - lat1
+    dlon = lons - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lats) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    return R * c
 
 
 @st.cache_data(ttl=REFRESH_INTERVAL_SECONDS)
@@ -127,15 +128,20 @@ def fetch_api_forecast(target_date_iso: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False)
 def enrich_with_distance(df: pd.DataFrame, user_lat: float, user_lon: float) -> pd.DataFrame:
-    """Adds 'distance_km' column with Haversine distance to the user."""
+    """Vectorized distance calculation for high performance."""
     if df.empty:
         return df
+    
+    # Efficiently calculate all distances at once using NumPy
     df = df.copy()
-    df["distance_km"] = df.apply(
-        lambda r: haversine_km(user_lat, user_lon, float(r["latitude"]), float(r["longitude"])),
-        axis=1
+    df["distance_km"] = haversine_vectorized(
+        user_lat, user_lon, 
+        df["latitude"].values.astype(float), 
+        df["longitude"].values.astype(float)
     ).round(1)
+    
     return df.sort_values("distance_km")
 
 
@@ -186,30 +192,35 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
         tornados = df[df["tornado_detected"] == 1]
         sensores_com_tornado = tornados["sensor"].unique()
 
-        # 2. Desenhar scans normais APENAS se "active_only" for False
-        # E garantindo que não desenhamos por cima de um sensor que já tem tornado
+        # 2. Draw normal scans using MarkerCluster for performance
         if not active_only:
-            scans_normais = df[
+            normal_scans = df[
                 (df["tornado_detected"] == 0) & 
                 (~df["sensor"].isin(sensores_com_tornado))
             ]
-
-            for _, row in scans_normais.iterrows():
-                lat = float(row["latitude"])
-                lon = float(row["longitude"])
-                ses = str(row.get("sensor", "NONE"))
-
-                # Círculo azul pequeno para scans sem alerta
-                folium.CircleMarker(
-                    location=[lat, lon],
-                    radius=5,  # Mais pequeno que o tornado para não distrair
-                    color="#3b82f6", # Azul Folium/Tailwind
-                    weight=1,
-                    fill=True,
-                    fill_color="#3b82f6",
-                    fill_opacity=0.4,
-                    tooltip=f"ℹ️ Clear Scan | Sensor: {ses}"
+            
+            if not normal_scans.empty:
+                marker_cluster = MarkerCluster(
+                    name="Normal Scans",
+                    overlay=True,
+                    control=True,
+                    options={'showCoverageOnHover': False, 'zoomToBoundsOnClick': True}
                 ).add_to(m)
+
+                for _, row in normal_scans.iterrows():
+                    lat, lon = float(row["latitude"]), float(row["longitude"])
+                    ses = str(row.get("sensor", "NONE"))
+
+                    folium.CircleMarker(
+                        location=[lat, lon],
+                        radius=4,
+                        color="#3b82f6",
+                        weight=1,
+                        fill=True,
+                        fill_color="#3b82f6",
+                        fill_opacity=0.4,
+                        tooltip=f"ℹ️ Clear Scan | Sensor: {ses}"
+                    ).add_to(marker_cluster)
 
 
         # 3. Desenhar os Tornados (Sempre visíveis se existirem)
