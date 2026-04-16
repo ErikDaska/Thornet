@@ -3,6 +3,7 @@ dataset:
   #zenodo_id: "12636522"
   dir_name: "tornet_${api.dataset.target_year}"
   raw_path: "${paths.raw_data_dir}/${api.dataset.dir_name}"
+  catalog_path: "${paths.raw_data_dir}"
 
 
   zenodo_mapping:
