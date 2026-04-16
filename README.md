@@ -65,5 +65,4 @@ Data versioning is strictly enforced using DVC:
 - **Processed Features**: Metadata logged to MLflow artifacts for every training run.
 - **Reproducibility**: Every prediction is linked to a specific model version and data hash.
 
----
-*Created as part of the Sintra IA MLOps Initiative.*
+
