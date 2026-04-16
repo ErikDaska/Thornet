@@ -167,8 +167,6 @@ def adapt_model_input(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
 
     return x
 
-# No main.py, confirma que estas funções estão assim:
-
 def scan_available_data():
     global AVAILABLE_DATES
     # Adicionamos um log para debug
