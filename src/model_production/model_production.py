@@ -24,6 +24,18 @@ def model_production(cfg: DictConfig):
     mlflow.set_tracking_uri(cfg.tracking.uri)
     client = MlflowClient()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    unified_model_name = "ThornetTornadoPrediction"
+
+    # --- 1. Get the CURRENT Production Model Performance ---
+    current_prod_ap = 0.0
+    try:
+        # Get the version currently tagged as 'production'
+        prod_version_data = client.get_model_version_by_alias(unified_model_name, "production")
+        # Extract the AP from the tags we saved previously
+        current_prod_ap = float(prod_version_data.tags.get("Model_AP", 0.0))
+        logger.info(f"Current Production Model AP: {current_prod_ap:.4f}")
+    except Exception:
+        logger.info("No current production model found. First model will be promoted automatically.")
 
     # 1. Load Dataset (Once for all models)
     processed_data_path = Path(cfg.paths.processed_data_dir) / str(cfg.api.dataset.target_year)
@@ -93,10 +105,8 @@ def model_production(cfg: DictConfig):
             gc.collect()
 
     # 4. Crown the Global Champion & Promote to Unified Registry
-    if best_model_name:
+    if best_model_name and best_global_ap > current_prod_ap:
         logger.info(f"GLOBAL CHAMPION: {best_model_name} (Version {best_model_version}) with AP: {best_global_ap:.4f}")
-        
-        unified_model_name = "ThornetTornadoPrediction"
         
         # We use the run_id from the champion to point back to the original logged artifact
         model_uri = f"runs:/{best_run_id}/model"
@@ -104,7 +114,7 @@ def model_production(cfg: DictConfig):
         logger.info(f"Registering champion artifact under unified name: '{unified_model_name}'...")
         
         # Register it to the new, unified model name
-        registered_model = mlflow.register_model(
+        new_version = mlflow.register_model(
             model_uri=model_uri,
             name=unified_model_name,
             tags={
@@ -113,15 +123,31 @@ def model_production(cfg: DictConfig):
                 "Model_AP": f"{best_global_ap:.4f}"
             }
         )
+
+        try:
+            # Transition all previous versions to "Archived" stage
+            latest_versions = client.search_model_versions(f"name='{unified_model_name}'")
+            for v in latest_versions:
+                if v.version != new_version.version:
+                    client.transition_model_version_stage(
+                        name=unified_model_name,
+                        version=v.version,
+                        stage="Archived"
+                    )
+                    logger.info(f"Archived version {v.version} of {unified_model_name}")
+        except Exception as e:
+            logger.warning(f"Could not archive old versions: {e}")
         
         # Apply the @production alias to the NEW unified registered model
         client.set_registered_model_alias(
             name=unified_model_name,
             alias="production",
-            version=registered_model.version
+            version=new_version.version
         )
         
-        logger.info(f"Success! '{unified_model_name}' (Version {registered_model.version}) promoted to @production.")
+        logger.info(f"Success! '{unified_model_name}' (Version {new_version.version}) promoted to @production.")
+    else:
+        logger.info("No improvement detected. Current production model remains unchanged.")
 
 if __name__ == "__main__":
     model_production()
