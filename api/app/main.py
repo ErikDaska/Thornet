@@ -92,15 +92,14 @@ class ForecastRequest(BaseModel):
 # --- Helpers ---
 def load_and_preprocess_file(filepath: str) -> torch.Tensor:
     """
-    Reads NetCDF and converts to normalized 14-channel Tensor [1, 14, 120, 240].
-    Note: The files in /data/processed are already normalized by the data_processing pipeline.
+    Reads NetCDF and converts to normalized 5D Tensor [1, 7, 2, 120, 240].
+    Dimensions: [Batch, Channels/Variables, Sweeps, Height, Width]
     """
     with xr.open_dataset(filepath, engine="h5netcdf") as ds:
         if 'time' in ds.dims:
             ds = ds.isel(time=0)
 
         # 1. Fill NaNs and ensure float32
-        # (Normalization is skipped because it's already done in the processing pipeline)
         ds = ds.fillna(0.0)
 
         # 2. MASK Creation (if missing in the file)
@@ -109,27 +108,64 @@ def load_and_preprocess_file(filepath: str) -> torch.Tensor:
                 ds['MASK'] = (~ds['DBZ'].isnull()).astype(np.float32)
             else:
                 # Use first available var for shape fallback
-                first_var = list(ds.data_vars)[0]
-                ds['MASK'] = xr.zeros_like(ds[first_var]).astype(np.float32)
-
-        # 3. Channel Stacking: 14 channels (7 vars x 2 sweeps)
-        # Sequence: All vars for Sweep 0, then all vars for Sweep 1
-        # Order within each sweep: DBZ, VEL, ZDR, RHOHV, KDP, WIDTH, MASK
-        all_channels = []
-        n_sweeps = ds.sizes.get('sweep', 1)
-        
-        # Standard TorNet model expects 14 channels
-        for s_idx in range(2): 
-            current_s = s_idx if s_idx < n_sweeps else 0 
-            for var in ['DBZ', 'VEL', 'ZDR', 'RHOHV', 'KDP', 'WIDTH', 'MASK']:
-                if var in ds.data_vars:
-                    data = ds[var].isel(sweep=current_s).values.copy()
-                    all_channels.append(data.astype(np.float32))
+                first_var = list(ds.data_vars)[0] if ds.data_vars else None
+                if first_var:
+                    ds['MASK'] = xr.zeros_like(ds[first_var]).astype(np.float32)
                 else:
-                    all_channels.append(np.zeros((120, 240), dtype=np.float32))
+                    # Total fallback
+                    ds['MASK'] = xr.DataArray(np.zeros((2, 120, 240), dtype=np.float32), dims=['sweep', 'azimuth', 'range'])
 
-    stacked_data = np.stack(all_channels, axis=0) # [14, 120, 240]
-    return torch.from_numpy(stacked_data).float().unsqueeze(0) # [1, 14, 120, 240]
+        # 3. Channel Stacking: 7 variables x 2 sweeps = 14 total, but kept 5D
+        # Standard TorNet Order: DBZ, VEL, ZDR, RHOHV, KDP, WIDTH, MASK
+        n_sweeps = ds.sizes.get('sweep', 1)
+        var_channels = []
+        
+        for var in ['DBZ', 'VEL', 'ZDR', 'RHOHV', 'KDP', 'WIDTH', 'MASK']:
+            sweep_data = []
+            for s_idx in range(2): 
+                # If file only has 1 sweep, repeat it (common for some datasets)
+                current_s = s_idx if s_idx < n_sweeps else 0 
+                if var in ds.data_vars:
+                    # Extract single sweep
+                    data = ds[var].isel(sweep=current_s).values.copy()
+                    sweep_data.append(data.astype(np.float32))
+                else:
+                    sweep_data.append(np.zeros((120, 240), dtype=np.float32))
+            
+            # Stack sweeps for this variable: [2, 120, 240]
+            var_channels.append(np.stack(sweep_data, axis=0))
+
+    # Stack all variables: [7, 2, 120, 240]
+    stacked_data = np.stack(var_channels, axis=0) 
+    return torch.from_numpy(stacked_data).float().unsqueeze(0) # [1, 7, 2, 120, 240]
+
+def adapt_model_input(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """
+    Dynamically adapts the standardized 5D TorNet tensor to the model's architecture.
+    """
+    # 1. Check if model is 3D or 2D by inspecting the first convolutional layer
+    is_3d = False
+    for m in model.modules():
+        if isinstance(m, torch.nn.Conv3d):
+            is_3d = True
+            break
+        if isinstance(m, torch.nn.Conv2d):
+            is_3d = False
+            break
+
+    if not is_3d and x.dim() == 5:
+        # Flatten Channels and Sweeps for 2D models: [B, 7, 2, H, W] -> [B, 14, H, W]
+        b, c, s, h, w = x.shape
+        logger.info(f"Adapting 5D input to 4D for 2D model architecture (Shape: {b}x{c*s}x{h}x{w})")
+        return x.view(b, c * s, h, w)
+    
+    if is_3d and x.dim() == 4:
+        # Unlikely but for safety: [B, 14, H, W] -> [B, 7, 2, H, W]
+        b, cs, h, w = x.shape
+        logger.info(f"Adapting 4D input to 5D for 3D model architecture (Shape: {b}x{cs//2}x2x{h}x{w})")
+        return x.view(b, cs // 2, 2, h, w)
+
+    return x
 
 # No main.py, confirma que estas funções estão assim:
 
@@ -234,6 +270,9 @@ def generate_forecast(request: ForecastRequest):
                 # Inference
                 input_tensor = load_and_preprocess_file(filepath).to(device)
                 
+                # Dynamic shape adaptation based on model type
+                input_tensor = adapt_model_input(model, input_tensor)
+
                 # DIAGNOSTIC: Check input stats
                 t_min = input_tensor.min().item()
                 t_max = input_tensor.max().item()
@@ -242,7 +281,7 @@ def generate_forecast(request: ForecastRequest):
                 raw_output = model(input_tensor)
                 prob = torch.sigmoid(raw_output).item()
 
-                logger.info(f"Scan {filename}: Prob={prob:.4f} | Logit={raw_output.item():.4f} | Input[min={t_min:.4f}, max={t_max:.4f}, mean={t_mean:.4f}]")
+                logger.info(f"Scan {filename}: Prob={prob:.4f} | Logit={raw_output.item():.4f} | Input[shape={list(input_tensor.shape)}, min={t_min:.4f}, max={t_max:.4f}]")
 
                 # Geo Lookup
                 lat, lon = 0.0, 0.0
