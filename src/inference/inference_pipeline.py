@@ -137,7 +137,7 @@ def _run_model_inference() -> pd.DataFrame | None:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🌪️  TorNet — Production Inference Pipeline v2")
+    logger.info("TorNet - Production Inference Pipeline v2")
     logger.info("=" * 60)
 
     OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)

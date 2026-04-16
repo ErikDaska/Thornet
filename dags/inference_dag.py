@@ -18,7 +18,7 @@ default_args = {
 with DAG(
     dag_id='tornado_inference_realtime',
     default_args=default_args,
-    description='Continuous Inference Pipeline — generates offline_data_fallback.csv every 5 minutes',
+    description='Continuous Inference Pipeline - generates offline_data_fallback.csv every 5 minutes',
     schedule=timedelta(minutes=5),         # Runs every 5 minutes
     start_date=datetime(2026, 4, 10),
     catchup=False,
