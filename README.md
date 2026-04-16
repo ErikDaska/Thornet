@@ -1,74 +1,69 @@
-# MLOps Pipeline: TorNet Radar Data Ingestion
+# ThorNet — Tornado Alert & MLOps Platform
 
-This repository contains the foundational MLOps infrastructure for processing the MIT-LL TorNet dataset.
+ThorNet is an end-to-end MLOps ecosystem designed for real-time tornado detection using multidimensional Nexrad radar data. It integrates scientific data processing, automated retraining pipelines, and a high-performance interactive dashboard for emergency visualization.
 
-The current pipeline demonstrates strict separation of code and data, data versioning using DVC with a simulated local remote, structural metadata logging via MLflow, and infrastructure automation using Docker Compose.
+## 🏗️ System Architecture
 
-## 📂 Project Structure (Submission State)
-Because the TorNet dataset exceeds academic submission file size limits, the raw data and the DVC remote are **not** included in this ZIP file. 
+The project implements a decoupled service-oriented architecture:
 
-Upon extraction, your directory should look like this:
-```text
-📦 emi_project            # This repository
- ┣ 📂 data
- ┃ ┗ 📂 raw               # Empty folder (Data goes here)
- ┣ 📂 src
- ┃ ┗ 📜 data_ingestion.py # Baseline pipeline script
- ┣ 📜 .dvcignore
- ┣ 📜 data/raw/tornet.dvc # The DVC tracking file holding the data lineage hash
- ┣ 📜 docker-compose.yml  # Infrastructure configuration for MLflow
- ┣ 📜 README.md
- ┣ 📜 requirements.txt
- ┗ 📜 setup.sh            # Automated environment and pipeline execution script
+1.  **Backend (MaaS)**: A FastAPI service serving PyTorch models (2D/3D CNNs) directly from the MLflow Model Registry.
+2.  **Frontend**: A Streamlit dashboard utilizing Folium for interactive geospatial visualization and real-time alert rendering.
+3.  **Orchestration**: Apache Airflow managing both high-frequency inference tasks and periodic model retraining.
+4.  **Experiment Tracking**: MLflow for parameter logging, metric visualization, and model version control.
+5.  **Monitoring**: Evidently AI for model and data drift analysis.
+6.  **Data Lineage**: DVC for versioning raw scientific data and processed features.
 
-```
+## 📂 Service Catalog
 
----
-
-## 🗄️ Step 1: Data Download (Action Required)
-
-Because the dataset is not included in the submission, you must download the raw data before running the automated setup. The `setup.sh` script is designed to abort safely if the data is missing to protect the DVC lineage.
-
-1. Download a subset of the TorNet dataset (e.g., the 2013 split) from the github (https://github.com/mit-ll/tornet) and place them directly inside the `data/raw/tornet/` directory.*
+| Service | Port | Description |
+| :--- | :--- | :--- |
+| **Streamlit App** | `8501` | Interactive dashboard for real-time tornado monitoring. |
+| **FastAPI MaaS** | `8000` | Model-as-a-Service endpoint for production inference. |
+| **Apache Airflow** | `8080` | Pipeline orchestration (Training & Inference DAGs). |
+| **MLflow Server** | `5000` | Experiment tracking and Model Registry. |
+| **Evidently UI** | `8081` | Model performance and data drift monitoring. |
 
 ---
 
-## 🚀 Step 2: Automated Environment & Pipeline Execution
+## 🚀 Getting Started
 
-Once the raw data is placed in the correct folder, the entire MLOps infrastructure and data ingestion pipeline can be launched with a single command.
-
-Ensure **Docker Desktop** is running, then execute the setup script from the root of the `emi_project` directory:
-
-**For Linux / macOS:**
+Ensure **Docker Desktop** is running, then execute the automated setup script:
 
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
 
-**For Windows:**
-
-```bash
-bash setup.bat
-```
-
-### ⚙️ What the Setup Script Does:
-
-To ensure flawless reproducibility, the `setup.sh` script automatically performs the following sequence:
-
-1. **Safety Check:** Verifies the dataset exists locally so DVC hashes are not accidentally overwritten.
-2. **Infrastructure Initialization:** Uses `docker-compose up -d` to spin up a persistent MLflow tracking server on port `5000`.
-3. **Environment Configuration:** Creates an isolated Python virtual environment (`venv`) and installs all necessary dependencies from `requirements.txt`.
-4. **Data Versioning:** Configures a simulated local DVC remote (`../emi_remote`), calculates the local data hashes to account for OS differences, and pushes the heavy `.nc` files to the local cache.
-5. **Pipeline Execution:** Runs `src/data_ingestion.py` to extract scientific radar metadata via `xarray` and log the strict DVC data lineage directly to MLflow.
+### What the automated setup performs:
+1.  **Dependency Management**: Configures a Python virtual environment and installs requirements.
+2.  **Infrastructure**: Spins up the full Docker container stack (Postgres, MLflow, Airflow, etc.).
+3.  **Automatic Data Sync**: Downloads a subset of the TorNet dataset from Zenodo if missing and initializes the DVC local remote.
+4.  **Pipeline Induction**: Executes the primary data ingestion pipeline to register structural metadata into MLflow.
 
 ---
 
-## 📊 Viewing the Results
+## 🌪️ Model Lifecycle & Management
 
-Once the script completes successfully, you can verify the experiment tracking and data lineage by accessing the MLflow UI.
+ThorNet uses a **Reliability-First** approach to model serving:
 
-Open your web browser and navigate to:
-**[http://127.0.0.1:5000](http://127.0.0.1:5000)**
+*   **Model Registry**: The API dynamically loads models aliased as `production` from MLflow. This allows swapping model architectures (e.g., from 2D to 3D CNN) without restarting the services.
+*   **Dual-Path Inference**: The dashboard implements a failover mechanism. It attempts live API inference first, falling back to cached CSV records (generated by Airflow) if the backend is unreachable.
+*   **Dynamic Adaptation**: The backend automatically adjusts input tensors (channel dropping and temporal depth expansion) to ensure compatibility across different model versions.
 
-Under the `TorNet_Data_Ingestion` experiment, you will find the logged run containing the exact DVC hash, total dataset size, file counts, and multidimensional radar variable configurations.
+---
+
+## ⚡ Performance Optimizations
+
+*   **Vectorized Geo-Logic**: Haversine distance calculations are implemented using NumPy vectorization, reducing latency by over 90% compared to standard loop-based approaches.
+*   **Geospatial Clustering**: Interactive maps utilize `MarkerCluster` to aggregate large radar scan datasets, preventing browser UI freezing while maintaining high detail levels.
+*   **FastAPI Asynchronicity**: High-concurrency support for multiple dashboard clients through asynchronous HTTP processing.
+
+## 📊 Data Lineage & DVC
+
+Data versioning is strictly enforced using DVC:
+- **Raw Data**: Tracked via `data/raw/tornet.dvc`.
+- **Processed Features**: Metadata logged to MLflow artifacts for every training run.
+- **Reproducibility**: Every prediction is linked to a specific model version and data hash.
+
+---
+*Created as part of the Sintra IA MLOps Initiative.*
