@@ -46,7 +46,7 @@ def startup_event():
         model_info = client.get_model_version_by_alias(name=MODEL_NAME, alias=ALIAS)
         model_uri = f"models:/{MODEL_NAME}/{model_info.version}"
 
-        model = mlflow.pytorch.load_model(model_uri, map_location=torch.device("cpu"))
+        model = mlflow.pytorch.load_model(model_uri, map_location=torch.device(device))
         model = model.to(device)
         model.eval()
         model_version = model_info.version
