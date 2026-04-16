@@ -304,8 +304,8 @@ with st.sidebar:
     # City Presets
     presets = {
         "— Custom —":           (None, None),
-        "Oklahoma City, OK 🌪️":       (35.4676, -97.5164),
-        "Wichita, KS 🌪️":            (37.6872, -97.3301),
+        "Oklahoma City, OK":       (35.4676, -97.5164),
+        "Wichita, KS ":            (37.6872, -97.3301),
         "Dallas, TX":                 (32.7767, -96.7970),
         "Kansas City, MO":            (39.0997, -94.5786),
         "Nashville, TN":              (36.1627, -86.7816),
@@ -399,8 +399,7 @@ if timestamp and timestamp != "No Data Available":
         # Choice 1: Live API
         if data_source == "Live API (Real-time)":
             if api_online and target_iso in api_dates:
-                with st.spinner(f"Running Deep Learning Inference for {target_iso}... (First time may take a few minutes)"):
-                    df = fetch_api_forecast(target_iso)
+                df = fetch_api_forecast(target_iso)
                 
                 # RELIABILITY-FIRST: Automatic failover if API fails
                 if df.empty and not df_csv.empty:
