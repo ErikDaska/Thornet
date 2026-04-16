@@ -141,55 +141,70 @@ def load_and_preprocess_file(filepath: str) -> torch.Tensor:
 
 def adapt_model_input(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
     """
-    Dynamically adapts the standardized 5D TorNet tensor to the model's architecture.
+    Dynamically adapts the standardized 5D TorNet tensor to the specific model architecture.
+    Ensures compatibility across 2D, 3D, and Recurrent neural networks.
     """
-    # 1. Check if model is 3D or 2D by inspecting the first convolutional layer
-    is_3d = False
-    for m in model.modules():
-        if isinstance(m, torch.nn.Conv3d):
-            is_3d = True
-            break
-        if isinstance(m, torch.nn.Conv2d):
-            is_3d = False
-            break
-
-    if not is_3d and x.dim() == 5:
-        # Flatten Channels and Sweeps for 2D models: [B, 7, 2, H, W] -> [B, 14, H, W]
-        b, c, s, h, w = x.shape
-        logger.info(f"Adapting 5D input to 4D for 2D model architecture (Shape: {b}x{c*s}x{h}x{w})")
-        return x.view(b, c * s, h, w)
+    # Original TorNet structure: [Batch, Channels, Frames/Sweeps, H, W] -> e.g., [B, 7, 2, 120, 240]
+    b, c, f, h, w = x.shape
     
-    if is_3d and x.dim() == 4:
-        # Unlikely but for safety: [B, 14, H, W] -> [B, 7, 2, H, W]
-        b, cs, h, w = x.shape
-        logger.info(f"Adapting 4D input to 5D for 3D model architecture (Shape: {b}x{cs//2}x2x{h}x{w})")
-        return x.view(b, cs // 2, 2, h, w)
+    # Architecture Detection
+    # Identifies if the model expects volumetric (3D) or sequential data
+    is_recurrent = any(isinstance(m, (torch.nn.GRU, torch.nn.LSTM, torch.nn.RNN)) for m in model.modules())
+    is_3d = any(isinstance(m, (torch.nn.Conv3d, torch.nn.BatchNorm3d, torch.nn.MaxPool3d)) for m in model.modules())
 
-    return x
+    # Channel Adaptation
+    # Models trained without the MASK variable expect 6 channels, while the API provides 7.
+    expected_channels = c
+    for m in model.modules():
+        if isinstance(m, (torch.nn.Conv2d, torch.nn.Conv3d)):
+            expected_channels = m.in_channels
+            break
+    
+    if expected_channels < c:
+        logger.info(f"Compatibility: Model expects {expected_channels} channels. Dropping the mask channel.")
+        x = x[:, :expected_channels, ...]
+
+    # Depth Adaptation for 3D/Sequential models
+    if is_3d or is_recurrent:
+        # Volumetric models with multiple pooling layers may collapse small depths (e.g., 2 -> 1 -> 0).
+        # We ensure a minimum depth of 4 by repeating available sweeps to maintain tensor stability.
+        if f < 4:
+            logger.info(f"Compatibility: 3D/RNN model requires higher temporal depth ({f}<4). Repeating sweeps.")
+            x = x.repeat(1, 1, 2, 1, 1) # Transforms [B, C, 2, H, W] -> [B, C, 4, H, W]
+        return x
+
+    # Adaptation for 2D Models (e.g., ResNet, Spatial CNN)
+    # Collapses the temporal dimension into the channel dimension: [B, C*F, H, W]
+    logger.info(f"Compatibility: 2D model detected. Reshaping 5D to 4D: [B, {x.shape[1] * x.shape[2]}, {h}, {w}]")
+    return x.reshape(b, -1, h, w)
 
 def scan_available_data():
+    """
+    Scans the data directory for NetCDF files and updates the global inventory of available dates.
+    Used by the /inventory endpoint to inform the frontend.
+    """
     global AVAILABLE_DATES
-    # Adicionamos um log para debug
     logger.info(f"Scanning for .nc files in: {DATA_DIR}")
     
-    # Procura ficheiros .nc em todas as subpastas
+    # Locate all .nc files recursively within subdirectories
     all_nc_files = glob.glob(os.path.join(DATA_DIR, "**", "*.nc"), recursive=True)
     
     unique_dates = set()
     for f in all_nc_files:
-        # Extrai YYMMDD (ex: 131222) do nome do ficheiro
+        # Extract date pattern YYMMDD (e.g., 131222) from the filename
         match = re.search(r"_(\d{6})_", os.path.basename(f))
         if match:
             try:
-                # Converte para objeto date e depois para ISO string
+                # Convert YYMMDD to a date object and then to an ISO string for API consistency
                 dt = datetime.strptime(match.group(1), "%y%m%d").date()
                 unique_dates.add(dt.isoformat())
             except Exception:
+                # Skip files with invalid date formats
                 continue
     
-    # Atualiza a lista global
+    # Update the global registry sorted by most recent date
     AVAILABLE_DATES = sorted(list(unique_dates), reverse=True)
-    logger.info(f"Inventory updated: {len(AVAILABLE_DATES)} dates found.")
+    logger.info(f"Inventory updated: {len(AVAILABLE_DATES)} unique dates identified.")
 
 
 
