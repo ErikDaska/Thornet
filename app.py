@@ -33,7 +33,6 @@ PredictionSchema = pa.DataFrameSchema({
 
 
 # PAGE CONFIGURATION
-
 st.set_page_config(
     page_title="TorNet — Tornado Alert Dashboard",
     page_icon="🌪️",
@@ -104,8 +103,7 @@ def fetch_api_inventory() -> list:
 def fetch_api_forecast(target_date_iso: str) -> pd.DataFrame:
     """Fetches forecast for a specific date from the API."""
     try:
-        # Note: st.spinner is handled in the main loop to avoid cache issues
-        with httpx.Client(timeout=300.0) as client:
+        with httpx.Client(timeout=300.0) as client: # 5 minutes timeout, so that the model has time to generate the predictions
             resp = client.post(f"{API_URL}/api/v1/forecast", json={"date_": target_date_iso})
             if resp.status_code == 200:
                 data = resp.json()
@@ -188,15 +186,15 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
 
     # Markers (Tornados & Normal Scans)
     if not df.empty:
-        # 1. Isolar os tornados reais
+        # Isolate real tornadoes
         tornados = df[df["tornado_detected"] == 1]
-        sensores_com_tornado = tornados["sensor"].unique()
+        tornado_sensors = tornados["sensor"].unique()
 
-        # 2. Draw normal scans using MarkerCluster for performance
+        # Draw normal scans using MarkerCluster
         if not active_only:
             normal_scans = df[
                 (df["tornado_detected"] == 0) & 
-                (~df["sensor"].isin(sensores_com_tornado))
+                (~df["sensor"].isin(tornado_sensors))
             ]
             
             if not normal_scans.empty:
@@ -223,7 +221,7 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
                     ).add_to(marker_cluster)
 
 
-        # 3. Desenhar os Tornados (Sempre visíveis se existirem)
+        # Draw tornados
         for _, row in tornados.iterrows():
             lat  = float(row["latitude"])
             lon  = float(row["longitude"])
@@ -235,7 +233,6 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
             color = ("red" if ses == "CRITICAL" else
                      "orange" if ses == "HIGH" else "beige")
 
-            # Círculo vermelho/laranja de impacto
             folium.CircleMarker(
                 location=[lat, lon],
                 radius=12 + prob * 10,
@@ -246,13 +243,13 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
                 fill_opacity=0.35,
             ).add_to(m)
             
-            # Ícone central de alerta
+            # Center icon for tornado alert
             folium.Marker(
                 location=[lat, lon],
-                tooltip=f"🌪️ {ses} | {dist:.0f} km | p={prob:.2f}",
+                tooltip=f"Tornado | {dist:.0f} km | p={prob:.2f}",
                 popup=folium.Popup(
                     f"""<div style='font-family:sans-serif;font-size:13px'>
-                    <b>🌪️ Tornado Detected</b><br>
+                    <b>Tornado Detected</b><br>
                     <b>Scan ID:</b> {sid}<br>
                     <b>Probability:</b> {prob:.1%}<br>
                     <b>Sensor:</b> {ses}<br>
@@ -267,7 +264,7 @@ def build_map(df: pd.DataFrame, user_lat: float, user_lon: float,
     folium.LayerControl().add_to(m)
     return m
 
-# --- DATA SOURCE INITIALIZATION ---
+# DATA SOURCE INITIALIZATION
 api_online = False
 api_dates = []
 api_metadata = {}
@@ -304,7 +301,7 @@ if not timestamp_prod:
 
 # SIDEBAR
 with st.sidebar:
-    st.markdown("## 🌪️ TorNet")
+    st.markdown("## TorNet")
     st.markdown('<p style="color:#64748b;font-size:0.85rem;margin-top:-8px">Tornado Alert Dashboard</p>',
                 unsafe_allow_html=True)
 
@@ -325,7 +322,7 @@ with st.sidebar:
         "New York, NY":               (40.7128, -74.0060),
     }
 
-    preset = st.selectbox("🏙️ Preset City", list(presets.keys()), key="preset_city")
+    preset = st.selectbox("Preset City", list(presets.keys()), key="preset_city")
     prelat, prelon = presets[preset]
 
     default_lat = prelat if prelat is not None else 37.6872
@@ -342,7 +339,7 @@ with st.sidebar:
                                    step=0.01, format="%.4f", key="lon_input")
 
     st.divider()
-    st.markdown('<p class="section-header">⚙️ Alert Parameters</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Alert Parameters</p>', unsafe_allow_html=True)
 
     threshold_km = st.slider(
         "Alert Radius (km)",
@@ -354,7 +351,7 @@ with st.sidebar:
         key="threshold_slider"
     )
 
-    st.markdown('<p class="section-header">📅 Schedule & Source</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Schedule & Source</p>', unsafe_allow_html=True)
 
     # Initialize session state for source selection to avoid NameErrors
     if "data_source_select" not in st.session_state:
@@ -381,7 +378,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown('<p class="section-header">🔄 Control Panel</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Control Panel</p>', unsafe_allow_html=True)
 
     show_all_scans = st.toggle("Show all scans on map", value=False, key="show_all_toggle")
     
@@ -390,7 +387,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    st.caption(f"📂 `{PREDICTIONS_PATH}`")
 
     if api_online:
         mn = api_metadata.get("model", "Model")
@@ -401,18 +397,18 @@ with st.sidebar:
         st.markdown('<span style="color:#ef4444; font-weight:700">○ OFFLINE</span>', unsafe_allow_html=True)
         st.caption("Using CSV fallback.")
 
-# --- DATA SELECTION LOGIC ---
+# DATA SELECTION LOGIC
 df = pd.DataFrame()
 if timestamp and timestamp != "No Data Available":
     try:
         target_iso = datetime.strptime(timestamp, "%d - %m - %Y").strftime("%Y-%m-%d")
         
-        # Choice 1: Live API
+        # Live API
         if data_source == "Live API (Real-time)":
             if api_online and target_iso in api_dates:
                 df = fetch_api_forecast(target_iso)
                 
-                # RELIABILITY-FIRST: Automatic failover if API fails
+                # Automatic failover if API fails
                 if df.empty and not df_csv.empty:
                     st.warning("API fetch failed or timed out. Automatically falling back to local CSV records.")
                     df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
@@ -425,7 +421,7 @@ if timestamp and timestamp != "No Data Available":
                 if not df_csv.empty:
                     df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
             
-        # Choice 2: Local CSV
+        # Local CSV
         else:
             if not df_csv.empty:
                 df = df_csv[df_csv["timestamp_dt"].dt.strftime("%d - %m - %Y") == timestamp].copy()
@@ -559,7 +555,7 @@ else:
                          height=min(300, 36 + 35 * len(df_display)))
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<p class="section-header">📍 Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-header">Closest Tornadoes (Top 10)</p>', unsafe_allow_html=True)
         df_tornados_sensor = df_tornados.groupby("sensor").first().reset_index()
         if not df_tornados_sensor.empty:
             top10 = df_tornados_sensor.nsmallest(10, "distance_km")[
@@ -572,7 +568,7 @@ else:
         else:
             st.info("No tornado data available in the current dataset.")
 
-    # Complete data table (expandable)
+    # Complete data table
     with st.expander("📋 See all prediction data", expanded=False):
         if not df.empty:
             df_show = df.copy()

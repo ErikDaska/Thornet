@@ -26,16 +26,8 @@ ALIAS = "production"
 DATA_DIR = os.getenv("PROCESSED_DATA_DIR", "/data/processed")
 AVAILABLE_DATES = []
 
-VAR_BOUNDS = {
-    'DBZ':   {'min': -32.0, 'max': 95.0},
-    'VEL':   {'min': -100.0, 'max': 100.0},
-    'KDP':   {'min': -10.0, 'max': 10.0},
-    'RHOHV': {'min': 0.0, 'max': 1.05},
-    'ZDR':   {'min': -8.0, 'max': 15.0},
-    'WIDTH': {'min': 0.0, 'max': 30.0}
-}
-
-CHANNEL_ORDER = ['DBZ', 'VEL', 'KDP', 'RHOHV', 'ZDR', 'WIDTH', 'MASK']
+# Configuration constants
+CHANNEL_ORDER = ['DBZ', 'VEL', 'ZDR', 'RHOHV', 'KDP', 'WIDTH', 'MASK']
 
 # Global State for Model
 model = None
@@ -47,7 +39,7 @@ def startup_event():
     """Load model and scan inventory on startup."""
     global model, model_version, AVAILABLE_DATES
     
-    # 1. Load Model from MLflow
+    # Load Model from MLflow
     try:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         client = MlflowClient()
@@ -62,7 +54,7 @@ def startup_event():
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
 
-    # 2. Build Inventory
+    # Build Inventory
     scan_available_data()
 
 # Load Radar Coordinates Database
@@ -75,6 +67,7 @@ except Exception as e:
 
 # --- Schemas ---
 class PredictionItem(BaseModel):
+    """Represents a single prediction for a specific radar sensor."""
     radar_id: str
     sensor: str     # Unified with dashboard/pipeline naming
     lat: float
@@ -83,10 +76,12 @@ class PredictionItem(BaseModel):
     timestamp: str  # Required by Streamlit app
 
 class ForecastResponse(BaseModel):
+    """ Forecast response schema."""
     target_date: date
     predictions: List[PredictionItem]
 
 class ForecastRequest(BaseModel):
+    """ Forecast request schema."""
     date_: date
 
 # --- Helpers ---
@@ -99,10 +94,10 @@ def load_and_preprocess_file(filepath: str) -> torch.Tensor:
         if 'time' in ds.dims:
             ds = ds.isel(time=0)
 
-        # 1. Fill NaNs and ensure float32
+        # Fill NaNs and ensure float32
         ds = ds.fillna(0.0)
 
-        # 2. MASK Creation (if missing in the file)
+        # MASK Creation (if missing in the file)
         if 'MASK' not in ds.data_vars:
             if 'DBZ' in ds.data_vars:
                 ds['MASK'] = (~ds['DBZ'].isnull()).astype(np.float32)
@@ -112,30 +107,21 @@ def load_and_preprocess_file(filepath: str) -> torch.Tensor:
                 if first_var:
                     ds['MASK'] = xr.zeros_like(ds[first_var]).astype(np.float32)
                 else:
-                    # Total fallback
                     ds['MASK'] = xr.DataArray(np.zeros((2, 120, 240), dtype=np.float32), dims=['sweep', 'azimuth', 'range'])
 
-        # 3. Channel Stacking: 7 variables x 2 sweeps = 14 total, but kept 5D
-        # Standard TorNet Order: DBZ, VEL, ZDR, RHOHV, KDP, WIDTH, MASK
-        n_sweeps = ds.sizes.get('sweep', 1)
+        # Channel Stacking: 7 variables x 2 sweeps
         var_channels = []
-        
-        for var in ['DBZ', 'VEL', 'ZDR', 'RHOHV', 'KDP', 'WIDTH', 'MASK']:
+        for var in CHANNEL_ORDER:
             sweep_data = []
             for s_idx in range(2): 
-                # If file only has 1 sweep, repeat it (common for some datasets)
-                current_s = s_idx if s_idx < n_sweeps else 0 
+                current_s = s_idx if s_idx < ds.sizes.get('sweep', 1) else 0 
                 if var in ds.data_vars:
-                    # Extract single sweep
                     data = ds[var].isel(sweep=current_s).values.copy()
                     sweep_data.append(data.astype(np.float32))
                 else:
                     sweep_data.append(np.zeros((120, 240), dtype=np.float32))
-            
-            # Stack sweeps for this variable: [2, 120, 240]
             var_channels.append(np.stack(sweep_data, axis=0))
 
-    # Stack all variables: [7, 2, 120, 240]
     stacked_data = np.stack(var_channels, axis=0) 
     return torch.from_numpy(stacked_data).float().unsqueeze(0) # [1, 7, 2, 120, 240]
 
@@ -208,10 +194,11 @@ def scan_available_data():
 
 
 
-# --- Endpoints ---
+# Endpoints
 
 @app.get("/")
 def read_root():
+    """Root endpoint for basic API status."""
     return {"status": "FastAPI is running", "model": MODEL_NAME}
 
 @app.get("/health")
@@ -227,6 +214,7 @@ def health_check():
 
 @app.get("/api/v1/inventory")
 def get_inventory():
+    """Returns the list of available dates with NetCDF files."""
     if not AVAILABLE_DATES:
         scan_available_data()
     return {"dates": AVAILABLE_DATES}
@@ -234,19 +222,12 @@ def get_inventory():
 
 @app.get("/api/v1/radars")
 def get_radars():
+    """Returns the list of available radars with their coordinates."""
     if RADAR_DF.empty:
         logger.warning("Data base of radars (RADAR_DF) is empty.")
         return {}
     
     return RADAR_DF.fillna(0.0).to_dict(orient="index")
-
-@app.get("/")
-def read_root():
-    return {"status": "online", "message": "ThorNet API is running"}
-
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "model_loaded": model is not None}
 
 @app.post("/api/v1/forecast", response_model=ForecastResponse)
 def generate_forecast(request: ForecastRequest):

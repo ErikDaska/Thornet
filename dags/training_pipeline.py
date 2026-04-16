@@ -57,7 +57,7 @@ with DAG(
 
     for model_name in available_models:
 
-        # BROKEN OUT FOR READABILITY: Notice the addition of the target_year parameter override
+        # Execution logic
         run_logic_training = (
             f"if [ '{{{{ params.target_model }}}}' = 'all' ] || [ '{{{{ params.target_model }}}}' = '{model_name}' ]; then "
             f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/training/train_model.py "
@@ -79,7 +79,7 @@ with DAG(
             bash_command=run_logic_training
         )
 
-        # BROKEN OUT FOR READABILITY: Notice the addition of the target_year parameter override
+        # Evaluation logic
         run_logic_evaluation = (
             f"if [ '{{{{ params.target_model }}}}' = 'all' ] || [ '{{{{ params.target_model }}}}' = '{model_name}' ]; then "
             f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/evaluation/evaluate_model.py "
