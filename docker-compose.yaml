@@ -173,17 +173,6 @@ services:
               count: 1
               capabilities: [gpu]
 
-  evidently-ui:
-    container_name: thornet-evidently
-    build:
-      context: .
-      dockerfile: evidently_ui/Dockerfile
-    restart: unless-stopped
-    ports:
-        - "8081:8081"
-    volumes:
-        - ./evidently_ui/workspace:/app/workspace
-
   streamlit-app:
     container_name: tornado-app
     build:
