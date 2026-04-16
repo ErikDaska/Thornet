@@ -28,8 +28,7 @@ The project implements a decoupled service-oriented architecture:
 Ensure **Docker Desktop** is running, then execute the automated setup script:
 
 ```bash
-chmod +x setup.sh
-./setup.sh
+docker compose up -d --build
 ```
 
 ### What the automated setup performs:
