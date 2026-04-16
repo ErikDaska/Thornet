@@ -155,7 +155,10 @@ def train(cfg: DictConfig):
     # Calculate the ratio of negative to positive samples to heavily weight the rare tornadoes
     num_pos = sum(y_train)
     num_neg = len(y_train) - num_pos
-    calculated_pos_weight = torch.tensor([num_neg / float(num_pos)], dtype=torch.float32).to(device)
+    if num_pos != 0:
+        calculated_pos_weight = torch.tensor([num_neg / float(num_pos)], dtype=torch.float32).to(device)
+    else:
+        calculated_pos_weight = 0.0
     logger.info(f"Calculated pos_weight for Focal Loss: {calculated_pos_weight.item():.2f}")
 
     criterion = BinaryFocalLossWithLogits(alpha=0.75, gamma=2.0, pos_weight=calculated_pos_weight)
