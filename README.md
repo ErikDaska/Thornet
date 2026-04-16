@@ -10,8 +10,7 @@ The project implements a decoupled service-oriented architecture:
 2.  **Frontend**: A Streamlit dashboard utilizing Folium for interactive geospatial visualization and real-time alert rendering.
 3.  **Orchestration**: Apache Airflow managing both high-frequency inference tasks and periodic model retraining.
 4.  **Experiment Tracking**: MLflow for parameter logging, metric visualization, and model version control.
-5.  **Monitoring**: Evidently AI for model and data drift analysis.
-6.  **Data Lineage**: DVC for versioning raw scientific data and processed features.
+5.  **Data Lineage**: DVC for versioning raw scientific data and processed features.
 
 ## 📂 Service Catalog
 
@@ -21,7 +20,6 @@ The project implements a decoupled service-oriented architecture:
 | **FastAPI MaaS** | `8000` | Model-as-a-Service endpoint for production inference. |
 | **Apache Airflow** | `8080` | Pipeline orchestration (Training & Inference DAGs). |
 | **MLflow Server** | `5000` | Experiment tracking and Model Registry. |
-| **Evidently UI** | `8081` | Model performance and data drift monitoring. |
 
 ---
 
