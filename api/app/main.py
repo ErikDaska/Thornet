@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time as dt_time, timezone
 import mlflow
 import torch
 import numpy as np
@@ -12,6 +12,8 @@ import os
 import glob
 import xarray as xr
 import re
+import time as time_module
+
 
 # Configure isolated logging
 logging.basicConfig(level=logging.INFO)
@@ -36,28 +38,50 @@ model = None
 model_version = "unknown"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-@app.on_event("startup")
-def startup_event():
-    """Load model and scan inventory on startup."""
-    global model, model_version, AVAILABLE_DATES
-    
-    # Load Model from MLflow
+def load_model_from_mlflow():
+    """Attempts to load the model from MLflow. Returns True if successful."""
+    global model, model_version
     try:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         client = MlflowClient()
+        
+        # Check if model exists and has the required alias
         model_info = client.get_model_version_by_alias(name=MODEL_NAME, alias=ALIAS)
         model_uri = f"models:/{MODEL_NAME}/{model_info.version}"
 
-        model = mlflow.pytorch.load_model(model_uri, map_location=torch.device(device))
-        model = model.to(device)
-        model.eval()
+        logger.info(f"Attempting to load model from: {model_uri}")
+        new_model = mlflow.pytorch.load_model(model_uri, map_location=torch.device("cpu"))
+        new_model = new_model.to(device)
+        new_model.eval()
+        
+        # Atomic update
+        model = new_model
         model_version = model_info.version
-        logger.info(f"Loaded {MODEL_NAME} | Version: {model_version} on {device}")
+        logger.info(f"Successfully loaded {MODEL_NAME} | Version: {model_version} on {device}")
+        return True
     except Exception as e:
-        logger.error(f"Failed to load model: {e}")
+        logger.warning(f"Could not load model '{MODEL_NAME}' (alias: {ALIAS}): {e}")
+        return False
+
+@app.on_event("startup")
+def startup_event():
+    """Initialize resources on startup with retry logic."""
+    global AVAILABLE_DATES
+    
+    # Try to load model with retries (Max 5 attempts, 10s apart)
+    max_retries = 5
+    for attempt in range(max_retries):
+        if load_model_from_mlflow():
+            break
+        if attempt < max_retries - 1:
+            logger.info(f"Retrying model load in 10s... (Attempt {attempt + 2}/{max_retries})")
+            time_module.sleep(10)
+    else:
+        logger.error("Failed to load model on startup after multiple attempts. Will attempt lazy-load on first request.")
 
     # Build Inventory
     scan_available_data()
+
 
 # Load Radar Coordinates Database
 try:
@@ -236,7 +260,10 @@ def generate_forecast(request: ForecastRequest):
     global FORECAST_RESULTS_CACHE
     
     if not model:
-        raise HTTPException(status_code=503, detail="Model not loaded.")
+        logger.info("Model not found in memory. Attempting a late binding (lazy-load)...")
+        if not load_model_from_mlflow():
+            raise HTTPException(status_code=503, detail="Model not loaded and could not be found in MLflow.")
+
 
     # Cache Lookup
     cache_key = f"{request.date_.isoformat()}_{model_version}"
@@ -265,12 +292,12 @@ def generate_forecast(request: ForecastRequest):
                     # Construct valid ISO timestamp for the Streamlit filter
                     dt_obj = datetime.combine(
                         request.date_, 
-                        time(hour=int(raw_time[:2]), minute=int(raw_time[2:4]), second=int(raw_time[4:6]))
+                        dt_time(hour=int(raw_time[:2]), minute=int(raw_time[2:4]), second=int(raw_time[4:6]))
                     ).replace(tzinfo=timezone.utc)
                     ts_str = dt_obj.isoformat()
                 except:
                     radar_id = "UNKNOWN"
-                    ts_str = datetime.combine(request.date_, time(0)).isoformat()
+                    ts_str = datetime.combine(request.date_, dt_time(0)).isoformat()
 
                 # Inference
                 input_tensor = load_and_preprocess_file(filepath).to(device)

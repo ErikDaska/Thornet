@@ -13,7 +13,7 @@ def promote_to_production(cfg: DictConfig):
     logger.info("Starting Final Model Promotion Phase...")
     
     mlflow.set_tracking_uri(cfg.tracking.uri)
-    client = MlflowClient()
+    client = MlflowClient(tracking_uri=cfg.tracking.uri)
     unified_model_name = "ThornetTornadoPrediction"
     current_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -27,7 +27,7 @@ def promote_to_production(cfg: DictConfig):
         logger.info("No current production model found. Baseline AP set to 0.0.")
 
     # 2. Find all recently evaluated registered models
-    registered_models = client.search_registered_models(filter_string="name ILIKE 'Tornet-%'")
+    registered_models = client.search_registered_models(filter_string="name ILIKE 'ThorNet-%'")
     
     best_global_ap = 0.0
     best_model_name = None
