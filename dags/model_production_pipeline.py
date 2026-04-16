@@ -1,9 +1,16 @@
+import os
 from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param
 from datetime import datetime, timedelta
 
-# Default arguments applied to all tasks in the DAG
+# Dynamically fetch available models (same logic as training_pipeline)
+CONF_MODEL_DIR = "/opt/airflow/conf/model"
+try:
+    available_models = [f.replace('.yaml', '') for f in os.listdir(CONF_MODEL_DIR) if f.endswith('.yaml')]
+except FileNotFoundError:
+    available_models = ["cnn3d", "cnn2d", "resnet3d", "spatialcnn"]
+
 default_args = {
     'owner': 'mlops_engineer',
     'depends_on_past': False,
@@ -13,11 +20,10 @@ default_args = {
     'retry_delay': timedelta(seconds=10),
 }
 
-# DAG context
 with DAG(
     dag_id='model_production_promotion',
     default_args=default_args,
-    description='Evaluates all registered models on the test set and promotes the best to production',
+    description='Evaluates registered models in parallel and promotes the best to production',
     schedule='@monthly',
     start_date=datetime(2026, 3, 23),
     catchup=False,
@@ -31,17 +37,31 @@ with DAG(
     }
 ) as dag:
 
-    # Run logic specifically for triggering the production script with hydra overrides
-    run_logic_production = (
-        "cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/model_production/model_production.py "
-        "api.dataset.target_year={{ params.target_year }} "
+    # The Final Promotion Task
+    run_logic_promotion = (
+        "cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/model_production/promote_to_production.py "
         "tracking.uri='http://mlflow_server:5000' "
     )
-
-    # Model Production Task
+    
     promote_best_model = BashOperator(
-        task_id='evaluate_and_promote_champion',
-        bash_command=run_logic_production
+        task_id='promote_champion_to_production',
+        bash_command=run_logic_promotion,
+        trigger_rule='all_success' # Ensures all evaluations must finish first
     )
 
-    promote_best_model
+    # Fan-out Evaluation Tasks
+    for model_name in available_models:
+        run_logic_eval = (
+            f"cd /opt/airflow && PYTHONPATH=/opt/airflow/src:$PYTHONPATH python src/model_production/evaluate_for_production.py "
+            f"model={model_name} "
+            f"api.dataset.target_year={{{{ params.target_year }}}} "
+            f"tracking.uri='http://mlflow_server:5000' "
+        )
+
+        evaluate_model_task = BashOperator(
+            task_id=f'evaluate_prod_{model_name}',
+            bash_command=run_logic_eval
+        )
+
+        # Map dependencies: Evaluate -> Promote
+        evaluate_model_task >> promote_best_model
